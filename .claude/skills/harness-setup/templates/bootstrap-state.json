@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "mode": null,
+  "started_at": null,
+  "phases": {
+    "0-preflight":    { "status": "pending", "at": null, "evidence": null },
+    "1-interview":    { "status": "pending", "at": null, "evidence": null },
+    "2-prd":          { "status": "pending", "at": null, "evidence": null },
+    "3-skills":       { "status": "pending", "at": null, "evidence": null },
+    "4-scaffold":     { "status": "pending", "at": null, "evidence": null },
+    "5-guardrails":   { "status": "pending", "at": null, "evidence": null },
+    "6-spec":         { "status": "pending", "at": null, "evidence": null },
+    "7-verification": { "status": "pending", "at": null, "evidence": null },
+    "8-dry-run":      { "status": "pending", "at": null, "evidence": null },
+    "9-finish":       { "status": "pending", "at": null, "evidence": null }
+  }
+}
