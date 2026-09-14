@@ -92,7 +92,7 @@ if [ -d raw ]; then
                   END { print c + 0 }')
 fi
 
-gates=$(tr -d '\r' < .claude/harness.env 2>/dev/null | sed -E 's/^[[:space:]]+//' | grep -E '^HARNESS_GATES_ACTIVE=' | tail -n 1 | sed -E "s/^HARNESS_GATES_ACTIVE=[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//")
+gates=$([ -f .claude/harness.env ] && tr -d '\r' < .claude/harness.env | sed -E 's/^[[:space:]]+//' | grep -E '^HARNESS_GATES_ACTIVE=' | tail -n 1 | sed -E "s/^HARNESS_GATES_ACTIVE=[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//")
 gates=${gates:-0}
 
 # --- Личные копии скиллов перекрывают проектные
