@@ -1,0 +1,49 @@
+# Автоматические проверки на GitHub. Копируется в .github/workflows/ci.yml в фазе «Окружение».
+# Использует те же команды, что сессии Claude: подготовку из .claude/hooks/project-setup.sh
+# и полный набор тестов HARNESS_TEST_CMD из .claude/harness.env.
+name: CI
+
+# Проверяется каждый push в любую ветку: агент сверяет результат по коммиту.
+on:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Службы для тестов, если нужны. Пароли здесь только тестовые.
+    # services:
+    #   postgres:
+    #     image: postgres:16
+    #     env:
+    #       POSTGRES_PASSWORD: postgres
+    #     ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Версия языка проекта. Оставь нужное.
+      # - uses: actions/setup-node@v4
+      #   with:
+      #     node-version: 22
+      # - uses: astral-sh/setup-uv@v6
+
+      - name: Подготовка окружения
+        if: hashFiles('.claude/hooks/project-setup.sh') != ''
+        env:
+          HARNESS_CONTEXT: ci
+        run: bash .claude/hooks/project-setup.sh
+
+      - name: Тесты
+        run: |
+          source .claude/hooks/_harness_lib.sh
+          harness_load_env .claude/harness.env
+          if [ -z "${HARNESS_TEST_CMD:-}" ]; then echo "HARNESS_TEST_CMD пустая в .claude/harness.env"; exit 1; fi
+          bash -c "$HARNESS_TEST_CMD"

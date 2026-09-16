@@ -2,6 +2,8 @@
 # harness-setup | идемпотентное слияние шаблона прав и хуков в существующий settings.json.
 # Печатает результат в stdout и не меняет исходные файлы.
 # Пользовательские правила и хуки сохраняются в своём порядке.
+# Плагины шаблона добавляются, если их нет; отключённый пользователем плагин остаётся отключённым.
+# Маркетплейс с тем же репозиторием, что в шаблоне, берётся из шаблона вместе с закреплённой версией. Маркетплейс с другим репозиторием считается осознанным форком и сохраняется.
 # Правила прошлых версий шаблона удаляются, хуки обвязки заменяются текущей версией.
 # При ошибке ничего не печатает и возвращает ненулевой код.
 # Использование: merge-settings.sh <settings.json> <settings.template.json>
@@ -27,7 +29,7 @@ out=$(jq -s '
   ];
   def moved_to_ask: ["Edit(/.claude/hooks/**)", "Edit(/.claude/settings.json)", "Edit(/.claude/harness.env)"];
   def harness_handler:
-    (.command // "") | test("[.]claude/hooks/(block-dangerous|secret-guard|after-edit-check|commit-gate|stop-gate|harness-status)[.]sh");
+    (.command // "") | test("[.]claude/hooks/(block-dangerous|secret-guard|after-edit-check|commit-gate|stop-gate|harness-status|env-setup)[.]sh");
   def clean_rules($xs): [ ($xs // [])[] | . as $r | select(any(obsolete[]; . == $r) | not) ];
   def append_new($xs; $ys): reduce ($ys // [])[] as $y ($xs; if any(.[]; . == $y) then . else . + [$y] end);
 
@@ -39,6 +41,12 @@ out=$(jq -s '
         deny:  append_new([ clean_rules($a.permissions.deny)[] | . as $r | select(any(moved_to_ask[]; . == $r) | not) ]; $b.permissions.deny)
       })
   | (if ($b | has("disableAllHooks")) then .disableAllHooks = $b.disableAllHooks else . end)
+  | (if (($b.enabledPlugins // {}) | length) > 0 then .enabledPlugins = (($b.enabledPlugins // {}) + ($a.enabledPlugins // {})) else . end)
+  | (if (($b.extraKnownMarketplaces // {}) | length) > 0 then
+      ($a.extraKnownMarketplaces // {}) as $am
+      | def src: (.source.url // .source.repo // null);
+      .extraKnownMarketplaces = ($am + (($b.extraKnownMarketplaces) | with_entries(select(($am[.key] == null) or (($am[.key] | src) == (.value | src))))))
+    else . end)
   | .hooks = (
       (($a.hooks // {})
         | with_entries(.value |= [ .[] | .hooks |= map(select(harness_handler | not)) | select((.hooks | length) > 0) ]))

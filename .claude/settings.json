@@ -25,7 +25,8 @@
       "Edit(/raw/**)",
       "Edit(/.claude/hooks/**)",
       "Edit(/.claude/settings.json)",
-      "Edit(/.claude/harness.env)"
+      "Edit(/.claude/harness.env)",
+      "Edit(/.github/workflows/**)"
     ],
     "deny": [
       "Read(/.env)",
@@ -97,7 +98,37 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/env-setup.sh",
+            "timeout": 600
+          }
+        ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "oh-my-claudecode@omc": true,
+    "codex@openai-codex": true
+  },
+  "extraKnownMarketplaces": {
+    "omc": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/Yeachan-Heo/oh-my-claudecode.git",
+        "ref": "v4.13.0"
+      }
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc",
+        "ref": "v1.0.4"
+      }
+    }
   }
 }

@@ -94,14 +94,14 @@ if [ -f .claude/harness.env ]; then
 else
   F harness.env "нет .claude/harness.env"
 fi
-for h in _harness_lib block-dangerous secret-guard after-edit-check commit-gate stop-gate harness-status; do
+for h in _harness_lib block-dangerous secret-guard after-edit-check commit-gate stop-gate harness-status env-setup; do
   f=".claude/hooks/$h.sh"
   if [ -f "$f" ]; then P "хук $h" "есть"; else F "хук $h" "нет файла"; fi
 done
 if [ -f .claude/settings.json ] && jq -e . .claude/settings.json >/dev/null 2>&1; then
   P settings.json "валидный JSON"
   jq -e '.disableAllHooks == false' .claude/settings.json >/dev/null && P disableAllHooks "false" || W disableAllHooks "не задан явно, глобальные настройки могут выключить хуки"
-  for h in block-dangerous secret-guard after-edit-check commit-gate stop-gate harness-status; do
+  for h in block-dangerous secret-guard after-edit-check commit-gate stop-gate harness-status env-setup; do
     jq -e --arg h "$h" '[.hooks[]?[]?.hooks[]?.command // empty] | any(test(".claude/hooks/" + $h + "[.]sh"))' .claude/settings.json >/dev/null \
       && P "подключён $h" "есть в settings.json" || F "подключён $h" "нет в settings.json"
   done
@@ -135,7 +135,28 @@ fi
 
 section "7. Роли проверки"
 if [ -f CLAUDE.md ] && grep -q '^## Готово, когда' CLAUDE.md; then P "определение готовности" "раздел есть в CLAUDE.md"; else F "определение готовности" "нет раздела «Готово, когда» в CLAUDE.md"; fi
-command -v codex >/dev/null 2>&1 && P "Codex CLI" "установлен" || W "Codex CLI" "не установлен, ревью делает запасной агент"
+if command -v codex >/dev/null 2>&1; then P "Codex CLI" "установлен"
+elif [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then P "Codex CLI" "облачная сессия: ревью Codex откладывается до сессии на Mac"
+else W "Codex CLI" "не установлен, ревью делает запасной агент"; fi
+if [ -f .claude/settings.json ]; then
+  jq -e '(.enabledPlugins // {})["oh-my-claudecode@omc"] == true' .claude/settings.json >/dev/null 2>&1 \
+    && P "плагин OMC" "объявлен в settings.json, облако поставит его само" || W "плагин OMC" "не объявлен в settings.json, в облаке не будет deep-interview и агентов OMC"
+fi
+
+section "7b. Окружение"
+if [ -f .claude/hooks/project-setup.sh ]; then
+  P "подготовка окружения" ".claude/hooks/project-setup.sh есть"
+  if [ -f .harness/runtime/env-setup.log ]; then P "лог подготовки" "есть, последний запуск в .harness/runtime/env-setup.log"; fi
+else
+  W "подготовка окружения" "нет .claude/hooks/project-setup.sh, зависимости в новой сессии ставятся вручную"
+fi
+if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | grep -q .; then
+  P CI "есть .github/workflows"
+  grep -rqs --include='*.yml' --include='*.yaml' 'HARNESS_TEST_CMD' .github/workflows && P "CI и тесты" "CI запускает HARNESS_TEST_CMD" || W "CI и тесты" "CI не использует HARNESS_TEST_CMD, команды могут разойтись"
+else
+  W CI "нет .github/workflows, сломанный код не будет виден без агента"
+fi
+if [ -f docs/HARNESS.md ] && grep -q '^## Окружение' docs/HARNESS.md; then P "окружение в HARNESS.md" "раздел есть"; else W "окружение в HARNESS.md" "нет раздела «Окружение» в docs/HARNESS.md"; fi
 
 if [ "$RUN_TESTS" = "1" ] && [ -f .claude/harness.env ]; then
   section "8. Тесты проекта"

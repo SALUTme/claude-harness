@@ -50,13 +50,15 @@ case "$lpath" in
 esac
 lbase=$(basename -- "${lpath:-none}")
 
-# Смысловая проверка правки. Печатает OK, UNKNOWN или DENY:причины.
+# Смысловая проверка правки. Печатает OK, UNKNOWN, WARN:предупреждения или DENY:причины.
 check_guard() { # $1 = путь к текущему файлу, $2 = settings | env
   if ! command -v python3 >/dev/null 2>&1; then
     local newtext
     newtext=$(jq -r '[.tool_input.content, .tool_input.new_string, ((.tool_input.edits // [])[] | .new_string)] | map(select(type == "string")) | join("\n")' <<<"$input")
     if printf '%s' "$newtext" | grep -Eq 'disableAllHooks|HARNESS_ALLOW_SELF_EDIT|bypassPermissions|HARNESS_GATES_ACTIVE'; then
       echo "DENY:правка затрагивает защитные настройки, а python3 для проверки недоступен"
+    elif printf '%s' "$newtext" | grep -Eq 'enabledPlugins|extraKnownMarketplaces|CLAUDE_CODE_REMOTE|HARNESS_ENV_SETUP_LOCAL'; then
+      echo "WARN:затрагивает плагины или автозапуск подготовки окружения, а python3 для точной проверки недоступен. Плагины и подготовка окружения запускают код без проверок хуков"
     else
       echo "UNKNOWN"
     fi
@@ -96,6 +98,7 @@ if new is None:
     sys.exit(0)
 
 reasons = []
+warnings = []
 if kind == "settings":
     try:
         nd = json.loads(new)
@@ -123,7 +126,9 @@ if kind == "settings":
         reasons.append("HARNESS_ALLOW_SELF_EDIT в env")
     if isinstance(nd.get("env"), dict) and "CLAUDE_PROJECT_DIR" in nd["env"]:
         reasons.append("CLAUDE_PROJECT_DIR в env")
-    for rule in ("Edit(/.claude/hooks/**)", "Edit(/.claude/settings.json)", "Edit(/.claude/harness.env)", "Edit(/raw/**)"):
+    if isinstance(nd.get("env"), dict) and "CLAUDE_CODE_REMOTE" in nd["env"]:
+        reasons.append("CLAUDE_CODE_REMOTE в env")
+    for rule in ("Edit(/.claude/hooks/**)", "Edit(/.claude/settings.json)", "Edit(/.claude/harness.env)", "Edit(/raw/**)", "Edit(/.github/workflows/**)"):
         if rule in (cpm.get("ask") or []) and rule not in (npm.get("ask") or []) and rule not in (npm.get("deny") or []):
             reasons.append("удаление подтверждения " + rule)
     for rule in ("Read(/.env)", "Edit(/.claude/settings.local.json)"):
@@ -156,6 +161,17 @@ if kind == "settings":
         if ct is None:
             return nt is None
         return isinstance(nt, (int, float)) and not isinstance(nt, bool) and nt >= ct
+    def dict_of(d, k):
+        v = d.get(k)
+        return v if isinstance(v, dict) else {}
+    cpl, npl = dict_of(cd, "enabledPlugins"), dict_of(nd, "enabledPlugins")
+    added = sorted(k for k, v in npl.items() if v is not False and cpl.get(k) in (None, False))
+    if added:
+        warnings.append("включает плагины " + ", ".join(added[:5]) + ". Плагины запускают свой код в каждой сессии без проверок хуков")
+    cmk, nmk = dict_of(cd, "extraKnownMarketplaces"), dict_of(nd, "extraKnownMarketplaces")
+    changed = sorted(k for k, v in nmk.items() if cmk.get(k) != v)
+    if changed:
+        warnings.append("добавляет или меняет источники плагинов " + ", ".join(changed[:5]) + ". Плагины запускают свой код в каждой сессии без проверок хуков")
     cur_h, new_h = handlers(cd), handlers(nd)
     for key in sorted(cur_h):
         name, event, matcher = key
@@ -198,6 +214,8 @@ else:
         reasons.append("HARNESS_GATES_ACTIVE должен быть 0 или 1")
     if cv.get("HARNESS_GATES_ACTIVE") == "1" and gates != "1":
         reasons.append("выключение гейтов")
+    if nv.get("HARNESS_ENV_SETUP_LOCAL") == "1" and cv.get("HARNESS_ENV_SETUP_LOCAL") != "1":
+        warnings.append("включает автозапуск подготовки окружения на этом компьютере. Менеджеры пакетов будут в начале каждой сессии выполнять код из файлов проекта, которые агент меняет без подтверждения")
     if gates == "1":
         noop = re.compile(r'^\s*(true|:|exit\s+0)\s*$|(\|\||;)\s*(true|:|exit\s+0)\s*$')
         for k in ("HARNESS_TEST_CMD", "HARNESS_FAST_CHECK_CMD"):
@@ -220,7 +238,7 @@ else:
                     reasons.append("HARNESS_STOP_MAX_BLOCKS меньше 1")
             except ValueError:
                 reasons.append("HARNESS_STOP_MAX_BLOCKS не число")
-print("DENY:" + "; ".join(reasons) if reasons else "OK")
+print("DENY:" + "; ".join(reasons) if reasons else ("WARN:" + "; ".join(warnings) if warnings else "OK"))
 PY
 }
 
@@ -240,6 +258,7 @@ if [ "$SELF_EDIT" != "1" ]; then
       verdict=$(check_guard "$ROOT/$rel" "$kind")
       case "$verdict" in
         DENY:*) deny "Эта правка выключает защиту обвязки: ${verdict#DENY:}. Агенту так делать нельзя. Если это действительно нужно, человек правит $rel в веб-редакторе GitHub." ;;
+        WARN:*) ask "Внимание: правка $rel ${verdict#WARN:}. Подтверждай, только если ты сам этого хочешь." ;;
       esac
       ask "Правка файла обвязки проекта: $rel. Проверь изменения перед подтверждением." ;;
     .claude/hooks/*)
