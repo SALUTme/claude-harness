@@ -128,7 +128,7 @@ if kind == "settings":
         reasons.append("CLAUDE_PROJECT_DIR в env")
     if isinstance(nd.get("env"), dict) and "CLAUDE_CODE_REMOTE" in nd["env"]:
         reasons.append("CLAUDE_CODE_REMOTE в env")
-    for rule in ("Edit(/.claude/hooks/**)", "Edit(/.claude/settings.json)", "Edit(/.claude/harness.env)", "Edit(/raw/**)", "Edit(/.github/workflows/**)"):
+    for rule in ("Edit(/.claude/hooks/**)", "Edit(/.claude/skills/**)", "Edit(/.claude/settings.json)", "Edit(/.claude/harness.env)", "Edit(/raw/**)", "Edit(/.github/workflows/**)"):
         if rule in (cpm.get("ask") or []) and rule not in (npm.get("ask") or []) and rule not in (npm.get("deny") or []):
             reasons.append("удаление подтверждения " + rule)
     for rule in ("Read(/.env)", "Edit(/.claude/settings.local.json)"):
@@ -224,13 +224,30 @@ else:
                 reasons.append(k + " всегда успешна")
         if cv.get("HARNESS_TEST_CMD") and not nv.get("HARNESS_TEST_CMD"):
             reasons.append("HARNESS_TEST_CMD очищена")
-        rx = nv.get("HARNESS_CHECK_SKIP_REGEX")
-        if rx:
+        # Тип проекта берём из состояния подготовки: путь до него от .claude/harness.env
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+        project_kind = ""
+        try:
+            with open(os.path.join(project_root, ".harness", "bootstrap-state.json"), encoding="utf-8") as fh:
+                project_kind = (json.load(fh) or {}).get("kind") or ""
+        except Exception:
+            project_kind = ""
+        research = project_kind == "research"
+        probes = ["wiki/page.md", "raw/material.pdf"] if research else ["src/app.ts", "app/main.py"]
+        what = "материалы исследования" if research else "файлы кода"
+        for key, label in (("HARNESS_CHECK_SKIP_REGEX", "пропускает"), ("HARNESS_GATE_EXCLUDE_REGEX", "исключает из ворот")):
+            rx = nv.get(key)
+            if rx is None:
+                if cv.get(key) and research:
+                    reasons.append("удаление " + key + ": вернутся значения для кода, и материалы исследования выпадут из проверок")
+                continue
+            if rx == cv.get(key):
+                continue
             try:
-                if re.search(rx, "src/app.ts") or re.search(rx, "app/main.py"):
-                    reasons.append("HARNESS_CHECK_SKIP_REGEX пропускает файлы кода")
+                if any(re.search(rx, probe) for probe in probes):
+                    reasons.append(key + " " + label + " " + what)
             except re.error:
-                reasons.append("HARNESS_CHECK_SKIP_REGEX не разбирается")
+                reasons.append(key + " не разбирается")
         mb = nv.get("HARNESS_STOP_MAX_BLOCKS")
         if mb is not None:
             try:
@@ -261,11 +278,11 @@ if [ "$SELF_EDIT" != "1" ]; then
         WARN:*) ask "Внимание: правка $rel ${verdict#WARN:}. Подтверждай, только если ты сам этого хочешь." ;;
       esac
       ask "Правка файла обвязки проекта: $rel. Проверь изменения перед подтверждением." ;;
-    .claude/hooks/*)
+    .claude/hooks/*|.claude/skills/*)
       if [ "$tool" = "Write" ] && [ -z "$(jq -r '.tool_input.content // empty' <<<"$input")" ]; then
-        deny "Эта правка очищает хук $rel. Агенту так делать нельзя."
+        deny "Эта правка очищает файл обвязки $rel. Агенту так делать нельзя."
       fi
-      ask "Правка хука обвязки: $rel. Проверь изменения перед подтверждением." ;;
+      ask "Правка файла обвязки: $rel. Это скилл или хук, он задаёт правила работы. Проверь изменения перед подтверждением." ;;
   esac
 fi
 

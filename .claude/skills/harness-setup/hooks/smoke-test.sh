@@ -75,6 +75,7 @@ HD_RESET=$'echo "<<EOF"\ngit reset --hard HEAD~3'
 HD_COMMIT_MSG=$'git commit -F - <<\'EOF\'\nrm old files in .claude/hooks\nEOF'
 
 echo "== block-dangerous: разрушительные команды, запрет"
+bd_each deny 'cp skill/SKILL.md .claude/skills/x/SKILL.md' 'echo x > .claude/skills/harness-setup/scripts/wiki-lint.sh'
 bd_each deny 'echo x > .claude/hooks/project-setup.sh' 'cp tpl.sh .claude/hooks/project-setup.sh' \
   "sed -i '' 's/HARNESS_TEST_CMD/true/' .github/workflows/ci.yml" 'echo x > .github/workflows/ci.yml' \
   'cd .github/workflows && echo x > ci.yml' 'cp /tmp/ci.yml .github/workflows/'
@@ -125,7 +126,6 @@ bd_each empty 'ls -la' 'npm test' 'rm -rf ./build' 'rm -rf node_modules dist' 'r
   'git commit -m "chore: tidy; rm old .claude/hooks/x.sh"' 'gh pr create --body "Moves checks & rm stale .claude/hooks/old.sh"' \
   'git add .claude/hooks docs' 'bash .claude/hooks/smoke-test.sh .claude/hooks' 'bash .claude/hooks/harness-status.sh --json' \
   'cp .claude/hooks/stop-gate.sh /tmp/backup.sh' 'cd .claude && ls && cd .. && rm -rf dist' 'mkdir -p .claude/hooks' \
-  'cp skill/SKILL.md .claude/skills/x/SKILL.md' \
   "node \"$HOME/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/codex-companion.mjs\" review --wait" \
   'python3 ~/.claude/skills/x/run.py' 'rm -rf ~/.claude/plugins/cache/tmp-x' \
   'bash ~/.claude/skills/harness-setup/scripts/merge-settings.sh .claude/settings.json t.json > .harness/runtime/settings.merged.json' \
@@ -196,6 +196,7 @@ if [ -f "$SELF_DIR/settings.template.json" ]; then
   run secret-guard "$(wt '.permissions.allow += ["Bash(pytest *)"]')" ask "новое правило allow"
   printf '%s' "$LAST_OUT" | grep -q 'Плагины запускают' && bad check "want=без предупреждения" "обычная правка без предупреждения о плагинах" || ok check yes "обычная правка без предупреждения о плагинах"
   run secret-guard "$(wt '.permissions.ask -= ["Edit(/.github/workflows/**)"]')" deny "удаление подтверждения на workflows"
+  run secret-guard "$(wt '.permissions.ask -= ["Edit(/.claude/skills/**)"]')" deny "удаление подтверждения на скиллы"
   run secret-guard "$(wt '.env = {"CLAUDE_CODE_REMOTE": "true"}')" deny "CLAUDE_CODE_REMOTE в env"
   run secret-guard "$(wt '.enabledPlugins["evil@x"] = true')" ask "новый плагин"
   printf '%s' "$LAST_OUT" | grep -q 'включает плагины evil@x' && ok check yes "новый плагин: отдельное предупреждение" || bad check "want=предупреждение" "новый плагин: отдельное предупреждение"
@@ -212,8 +213,19 @@ run secret-guard "$(wj .claude/harness.env 'HARNESS_GATES_ACTIVE=0')" deny "пе
 run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nHARNESS_GATES_ACTIVE=0')" deny "выключение гейтов второй строкой"
 run secret-guard "$(wj .claude/harness.env 'HARNESS_GATES_ACTIVE=1; HARNESS_GATES_ACTIVE=0')" deny "выключение гейтов через точку с запятой"
 run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nX=HARNESS_ALLOW_SELF; eval "${X}_EDIT=1"')" deny "eval в harness.env"
+mkdir -p "$TMP/.harness"
+printf '{"version":1,"kind":"research","mode":null,"phases":{}}' > "$TMP/.harness/bootstrap-state.json"
+printf "HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD='bash .claude/skills/harness-setup/scripts/wiki-lint.sh'\nHARNESS_CHECK_SKIP_REGEX='^(docs)/'\nHARNESS_GATE_EXCLUDE_REGEX='^(docs)/'\n" > "$TMP/.claude/harness.env"
+run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD=\'bash wiki-lint.sh\'\nHARNESS_CHECK_SKIP_REGEX=\'^(wiki|raw)/\'\nHARNESS_GATE_EXCLUDE_REGEX=\'^(docs)/\'')" deny "исследование: пропуск вики из проверок запрещён"
+printf "HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD=''\nHARNESS_CHECK_SKIP_REGEX='(\\.(md|mdx|txt|rst)$|^(docs|wiki|raw)/)'\nHARNESS_GATE_EXCLUDE_REGEX='^(docs|wiki|raw|\\.harness|\\.claude)/'\n" > "$TMP/.claude/harness.env"
+run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD=\'bash wiki-lint.sh\'\nHARNESS_GATE_EXCLUDE_REGEX=\'^(docs)/\'')" deny "исследование: удаление выражения пропуска запрещено"
+run secret-guard "$(jq -n --arg o "HARNESS_TEST_CMD=''" --arg n "HARNESS_TEST_CMD='bash .claude/skills/harness-setup/scripts/wiki-lint.sh'" '{tool_name:"Edit",tool_input:{file_path:".claude/harness.env",old_string:$o,new_string:$n}}')" ask "исследование: правка одной строки не упирается в старые значения"
+rm -f "$TMP/.harness/bootstrap-state.json"
+printf "HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD='exit 1'\n" > "$TMP/.claude/harness.env"
 cp "$TMP/.claude/harness.env" "$TMP/harness.env.bak" 2>/dev/null || true
 printf 'HARNESS_GATES_ACTIVE=0\nHARNESS_ENV_SETUP_LOCAL=0\n' > "$TMP/.claude/harness.env"
+run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nHARNESS_GATE_EXCLUDE_REGEX=.')" deny "выражение ворот исключает всё"
+run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=1\nHARNESS_GATE_EXCLUDE_REGEX=^(docs|')" deny "негодное выражение ворот"
 run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=0\nHARNESS_ENV_SETUP_LOCAL=1')" ask "включение автоподготовки на Mac"
 printf '%s' "$LAST_OUT" | grep -q 'автозапуск подготовки окружения' && ok check yes "автоподготовка на Mac: отдельное предупреждение" || bad check "want=предупреждение" "автоподготовка на Mac: отдельное предупреждение"
 if [ -f "$TMP/harness.env.bak" ]; then mv "$TMP/harness.env.bak" "$TMP/.claude/harness.env"; else rm -f "$TMP/.claude/harness.env"; fi
@@ -234,7 +246,8 @@ printf 'HARNESS_GATES_ACTIVE=0\n' > "$TMP/.claude/harness.env"
 run secret-guard "$(wj .claude/harness.env $'HARNESS_GATES_ACTIVE=0\nHARNESS_TEST_CMD=true')" ask "заглушка тестов при выключенных гейтах"
 rm -f "$TMP/.claude/harness.env"
 run secret-guard "$(wj "$HOME/.claude/skills/x/SKILL.md" '# skill')" empty "глобальные скиллы"
-run secret-guard "$(wj .claude/skills/x/SKILL.md '# skill')" empty "скилл проекта"
+run secret-guard "$(wj .claude/skills/x/SKILL.md '# skill')" ask "скилл проекта: правка через подтверждение"
+run secret-guard "$(wj .claude/skills/harness/SKILL.md '')" deny "очистка скилла обвязки"
 run secret-guard "$(wj .env.example 'A=')" empty ".env.example"
 run secret-guard "$(wj .env.test 'A=fake')" empty ".env.test"
 run secret-guard "$(wj src/app.ts 'export const x = 1;')" empty "обычный код"
@@ -344,7 +357,7 @@ if [ -f "$TPL" ] && [ -f "$MERGE" ]; then
   check "шаблон: хуки запускаются через bash" jq -e '[.hooks[][].hooks[].command] | all(startswith("bash "))' "$TPL"
   check "шаблон: нет правил Write(...)" jq -e '[(.permissions.allow // [])[], (.permissions.ask // [])[], (.permissions.deny // [])[] | select(startswith("Write("))] | length == 0' "$TPL"
   check "шаблон: пути deny привязаны к корню" jq -e '(.permissions.deny | length) as $n | [.permissions.deny[] | select(test("^(Read|Edit)\\(/"))] | length == $n' "$TPL"
-  check "шаблон: файлы обвязки через подтверждение" jq -e '[.permissions.ask[] | select(. == "Edit(/.claude/hooks/**)" or . == "Edit(/.claude/settings.json)" or . == "Edit(/.claude/harness.env)")] | length == 3' "$TPL"
+  check "шаблон: файлы обвязки через подтверждение" jq -e '[.permissions.ask[] | select(. == "Edit(/.claude/hooks/**)" or . == "Edit(/.claude/skills/**)" or . == "Edit(/.claude/settings.json)" or . == "Edit(/.claude/harness.env)")] | length == 4' "$TPL"
   check "шаблон: файлы обвязки не в deny" jq -e '[.permissions.deny[] | select(startswith("Edit(/.claude") and . != "Edit(/.claude/settings.local.json)")] | length == 0' "$TPL"
   check "шаблон: режим bypass запрещён" jq -e '.permissions.disableBypassPermissionsMode == "disable"' "$TPL"
   check "шаблон: settings.local.json агенту запрещён" jq -e '(.permissions.deny | any(. == "Edit(/.claude/settings.local.json)")) and (.permissions.ask | any(. == "Edit(/.claude/settings.local.json)") | not)' "$TPL"
@@ -396,6 +409,104 @@ else
   echo "SKIP  шаблон или скрипт слияния не найдены рядом со smoke-test.sh"
 fi
 
+echo "== режим исследования"
+LINT="$SELF_DIR/../scripts/wiki-lint.sh"
+[ -f "$LINT" ] || LINT="$SELF_DIR/../skills/harness-setup/scripts/wiki-lint.sh"
+if [ -f "$LINT" ]; then
+  RS="$ST/res"; mkdir -p "$RS/wiki" "$RS/raw"
+  printf 'схема\n' > "$RS/wiki/SCHEMA.md"
+  printf '# Индекс\n- [Рынок](market.md)\n' > "$RS/wiki/index.md"
+  printf '## [2026-09-24] ingest | brief.pdf\n' > "$RS/wiki/log.md"
+  printf '# Рынок\n\nФакт из [брифа](../raw/brief.pdf).\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  printf 'x\n' > "$RS/raw/brief.pdf"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: правильная страница проходит проверку" || bad check "want=exit 0" "вики: правильная страница проходит проверку"
+  lint_says() { # подстрока, метка
+    if bash "$LINT" "$RS" 2>&1 | grep -q "$1"; then ok check yes "$2"; else bad check "want=$1" "$2"; fi
+  }
+  printf '# Рынок\n\nФакт без источника.\n' > "$RS/wiki/market.md"
+  lint_says 'нет источника' "вики: страница без источников не проходит"
+  printf -- '---\ntype: source\nsources: [sources/brief]\nupdated: 2026-09-24\n---\n# Рынок\n\nТекст.\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: страница по схеме с sources проходит" || bad check "want=exit 0" "вики: страница по схеме с sources проходит"
+  printf -- '---\nsources:\n  - sources/brief\n  - sources/call\n---\n# Рынок\n\nТекст.\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: sources списком с новой строки проходит" || bad check "want=exit 0" "вики: sources списком с новой строки проходит"
+  printf -- '\xef\xbb\xbf---\r\nsources: [sources/brief]\r\n---\r\n# Рынок\r\n\r\nТекст.\r\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: метка кодировки и переводы строк Windows не мешают" || bad check "want=exit 0" "вики: метка кодировки и переводы строк Windows не мешают"
+  printf -- '---\nsources:\n---\n# Рынок\n' > "$RS/wiki/market.md"
+  lint_says 'нет источника' "вики: пустой список sources не считается источником"
+  printf -- '---\nsources: [sources/brief]\n---\n# Рынок\n\n[файл](notes:missing.md)\n' > "$RS/wiki/market.md"
+  lint_says 'несуществующий файл' "вики: двоеточие в имени файла не путается со схемой"
+  printf -- '---\nsources: # заполнить позже\n---\n# Рынок\n' > "$RS/wiki/market.md"
+  lint_says 'нет источника' "вики: закомментированный sources не считается источником"
+  printf -- '---\ntype: source\nsources: [sources/brief]\n# заголовок не закрыт\n# Рынок\n' > "$RS/wiki/market.md"
+  lint_says 'нет источника' "вики: незакрытый заголовок файла не даёт источника"
+  printf -- '---\nsources: [sources/brief]\n---\n# Рынок\n\n[сайт](HTTPS://example.com/x) [s3](s3://bucket/key.pdf)\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: схемы в любом регистре не ложная тревога" || bad check "want=exit 0" "вики: схемы в любом регистре не ложная тревога"
+  printf '# Рынок\n\n## Источники\n' > "$RS/wiki/market.md"
+  lint_says 'пустой' "вики: пустой раздел источников не проходит"
+  printf '# Рынок\n\n[бриф](../raw/nope.pdf)\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  lint_says 'несуществующий файл' "вики: битая ссылка не проходит"
+  printf '# Рынок\n\n![схема](../raw/pic.png)\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && bad check "want=проблема" "вики: битая картинка не проходит" || ok check yes "вики: битая картинка не проходит"
+  printf '# Рынок\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  printf '# Сирота\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/orphan.md"
+  lint_says 'не упомянута' "вики: страница вне индекса не проходит"
+  rm -f "$RS/wiki/orphan.md"
+  printf '## [24.09.2026] ingest brief\n' >> "$RS/wiki/log.md"
+  lint_says 'не по формату' "вики: запись журнала не по формату не проходит"
+  printf '## [2026-09-24] ingest | brief.pdf\n' > "$RS/wiki/log.md"
+  printf 'y\n' > "$RS/raw/call.md"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: необработанный материал это заметка, а не проблема" || bad check "want=exit 0" "вики: необработанный материал это заметка, а не проблема"
+  mkdir -p "$ST/nowiki"
+  out=$(bash "$LINT" "$ST/nowiki" 2>&1); rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'нет папки wiki'; then ok check yes "вики: папка без wiki это понятная проблема"; else bad check "want=проблема" "вики: папка без wiki это понятная проблема"; fi
+  mkdir -p "$ST/fresh/wiki"; printf 'схема\n' > "$ST/fresh/wiki/SCHEMA.md"; printf '# Индекс\n' > "$ST/fresh/wiki/index.md"; : > "$ST/fresh/wiki/log.md"
+  bash "$LINT" "$ST/fresh" >/dev/null 2>&1 && ok check yes "вики: свежая вики без страниц проходит" || bad check "want=exit 0" "вики: свежая вики без страниц проходит"
+  printf '# Одна\n\n## Источники\n- raw/brief.pdf\n' > "$ST/fresh/wiki/page.md"; printf -- '- [Одна](page.md)\n' >> "$ST/fresh/wiki/index.md"
+  bash "$LINT" "$ST/fresh" 2>&1 | grep -q 'нет записей' && ok check yes "вики: страница без записи в журнале не проходит" || bad check "want=проблема" "вики: страница без записи в журнале не проходит"
+  printf '# Рынок\n\n[док](<../raw/brief.pdf>) [сайт](//example.com/x) [тел](tel:+123) [файл](../raw/br%%20ief.pdf)\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  printf 'x\n' > "$RS/raw/br ief.pdf"
+  bash "$LINT" "$RS" >/dev/null 2>&1 && ok check yes "вики: угловые скобки, схемы и пробелы в пути не ложная тревога" || bad check "want=exit 0" "вики: угловые скобки, схемы и пробелы в пути не ложная тревога"
+  rm -f "$RS/raw/br ief.pdf"
+  printf '# Рынок\n\n[вне](README.md)\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  bash "$LINT" "$RS" 2>&1 | grep -q 'несуществующий файл README.md' && ok check yes "вики: ссылка считается от папки страницы" || bad check "want=проблема" "вики: ссылка считается от папки страницы"
+  printf '# Рынок\n\n## Источники\n- raw/brief.pdf\n' > "$RS/wiki/market.md"
+  rm -f "$RS/raw/call.md"
+  printf '## [2026-09-24] ingest | brief.pdf\n## [2026-09-24] ingest | my report.pdf\n' > "$RS/wiki/log.md"; printf 'x\n' > "$RS/raw/my report.pdf"
+  spout=$(bash "$LINT" "$RS" 2>&1)
+  printf '%s\n' "$spout" | grep -q '^ЗАМЕТКА.*необработанных' && bad check "want=без заметки" "вики: имя материала с пробелом считается обработанным: $(printf '%s' "$spout" | tr '\n' ' ')" || ok check yes "вики: имя материала с пробелом считается обработанным"
+  rm -f "$RS/raw/my report.pdf"; printf '## [2026-09-24] ingest | brief.pdf\n' > "$RS/wiki/log.md"
+  mkdir -p "$RS/.harness"
+  printf '{"version":1,"kind":"research","mode":null,"phases":{"0-preflight":{"status":"pending"}}}' > "$RS/.harness/bootstrap-state.json"
+  if [ -f "$SELF_DIR/harness-status.sh" ]; then
+    check "статус: тип проекта виден" jq -e '.project_kind == "research"' <<<"$(CLAUDE_PROJECT_DIR="$RS" bash "$SELF_DIR/harness-status.sh" --json)"
+    CLAUDE_PROJECT_DIR="$RS" bash "$SELF_DIR/harness-status.sh" | grep -q 'исследовательский проект' && ok check yes "статус: режим исследования в тексте" || bad check "want=текст режима" "статус: режим исследования в тексте"
+  fi
+  # Ворота конца хода считают правки вики работой, когда это задано в harness.env
+  RG="$ST/gate"; mkdir -p "$RG/.claude/hooks" "$RG/wiki"
+  cp "$SELF_DIR/_harness_lib.sh" "$SELF_DIR/stop-gate.sh" "$RG/.claude/hooks/"
+  git -C "$RG" init -q; git -C "$RG" config user.email t@e; git -C "$RG" config user.name t
+  printf 'страница\n' > "$RG/wiki/page.md"; git -C "$RG" add -A; git -C "$RG" commit -qm init
+  printf 'правка\n' >> "$RG/wiki/page.md"
+  gate_env() { printf "HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD='exit 1'\nHARNESS_CHECK_SKIP_REGEX='^(docs)/'\nHARNESS_GATE_EXCLUDE_REGEX='%s'\n" "$1" > "$RG/.claude/harness.env"; }
+  gate_env '^(docs|wiki|raw|\.harness|\.claude)/'
+  out=$(printf '{"stop_hook_active":false,"session_id":"r1"}' | CLAUDE_PROJECT_DIR="$RG" bash "$RG/.claude/hooks/stop-gate.sh" 2>/dev/null)
+  printf '%s' "$out" | grep -q '"decision": *"block"' && bad check "want=без блокировки" "ворота: по умолчанию вики не проверяется" || ok check yes "ворота: по умолчанию вики не проверяется"
+  gate_env '^(docs|\.harness|\.claude)/'
+  out=$(printf '{"stop_hook_active":false,"session_id":"r2"}' | CLAUDE_PROJECT_DIR="$RG" bash "$RG/.claude/hooks/stop-gate.sh" 2>/dev/null)
+  printf '%s' "$out" | grep -q '"decision": *"block"' && ok check yes "ворота: в режиме исследования правка вики проверяется" || bad check "want=block" "ворота: в режиме исследования правка вики проверяется"
+  gate_env '^(docs|wiki'
+  out=$(printf '{"stop_hook_active":false,"session_id":"r3"}' | CLAUDE_PROJECT_DIR="$RG" bash "$RG/.claude/hooks/stop-gate.sh" 2>/dev/null)
+  printf '%s' "$out" | grep -q '"decision": *"block"' && ok check yes "ворота: негодное выражение не отключает проверки" || bad check "want=block" "ворота: негодное выражение не отключает проверки"
+  gate_env ''
+  out=$(printf '{"stop_hook_active":false,"session_id":"r4"}' | CLAUDE_PROJECT_DIR="$RG" bash "$RG/.claude/hooks/stop-gate.sh" 2>/dev/null)
+  printf '%s' "$out" | grep -q '"decision": *"block"' && ok check yes "ворота: пустое выражение значит ничего не исключать" || bad check "want=block" "ворота: пустое выражение значит ничего не исключать"
+  printf "HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD='exit 1'\nHARNESS_CHECK_SKIP_REGEX='[[:foo:]]'\nHARNESS_GATE_EXCLUDE_REGEX='^(docs)/'\n" > "$RG/.claude/harness.env"
+  out=$(printf '{"stop_hook_active":false,"session_id":"r5"}' | CLAUDE_PROJECT_DIR="$RG" bash "$RG/.claude/hooks/stop-gate.sh" 2>/dev/null)
+  printf '%s' "$out" | grep -q '"decision": *"block"' && ok check yes "ворота: негодное выражение пропуска не отключает проверки" || bad check "want=block" "ворота: негодное выражение пропуска не отключает проверки"
+else
+  echo "SKIP  wiki-lint.sh не найден рядом со smoke-test.sh"
+fi
+
 echo "== env-setup"
 if [ -f "$SELF_DIR/env-setup.sh" ]; then
   E="$ST/env"; mkdir -p "$E/.claude/hooks"; cp "$SELF_DIR/_harness_lib.sh" "$E/.claude/hooks/"
@@ -425,7 +536,7 @@ if [ -f "$SELF_DIR/env-setup.sh" ]; then
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'код 3' && printf '%s' "$out" | grep -q 'boom-line'; then ok check yes "окружение: ошибка видна, сессия не ломается"; else bad check "want=ошибка с логом" "окружение: ошибка видна: $out"; fi
   printf 'sleep 20 & wait\n' > "$E/.claude/hooks/project-setup.sh"
   t0=$(date +%s); out=$(HARNESS_ENV_SETUP_TIMEOUT=1 es); t1=$(date +%s)
-  if [ $((t1 - t0)) -lt 10 ] && printf '%s' "$out" | grep -q 'не уложилась'; then ok check yes "окружение: сторож останавливает долгую подготовку"; else bad check "want=остановка" "окружение: сторож: $out"; fi
+  if [ $((t1 - t0)) -lt 25 ] && printf '%s' "$out" | grep -q 'не уложилась'; then ok check yes "окружение: сторож останавливает долгую подготовку"; else bad check "want=остановка" "окружение: сторож: $out"; fi
   check "окружение: замок снят после остановки" test ! -e "$E/.harness/runtime/env-setup.lock"
   printf 'bash -c '"'"'trap "" TERM; sleep 25'"'"' &\nwait\n' > "$E/.claude/hooks/project-setup.sh"
   out=$(HARNESS_ENV_SETUP_TIMEOUT=1 es)

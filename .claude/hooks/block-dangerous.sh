@@ -50,7 +50,7 @@ ROOT_RE=$(ere_escape "$ROOT")
 HOME_RE=$(ere_escape "${HOME:-/nonexistent-home}")
 HP_START=$'(^|[[:space:]"\'=(<>])'
 HP_PREFIX=$'(\\./|"?[$][{]?(CLAUDE_PROJECT_DIR|PWD)[}]?"?/|"?(__SUB__|[$][(][^)]*[)]|`[^`]*`)"?/|([^[:space:]"\'/<>=]+/)*[.][.]/|'"${ROOT_RE}"$'/)?'
-HP_TAIL=$'([.]claude(/(hook|settings|harness)[^/[:space:]"\';&|)]*|/[*?[]|/?(["\'[:space:];&|)]|$))|[.]github(/workflows[^[:space:]"\';&|)]*|/[*?[]|/?(["\'[:space:];&|)]|$)))'
+HP_TAIL=$'([.]claude(/(hook|settings|harness|skill)[^/[:space:]"\';&|)]*|/[*?[]|/?(["\'[:space:];&|)]|$))|[.]github(/workflows[^[:space:]"\';&|)]*|/[*?[]|/?(["\'[:space:];&|)]|$)))'
 HOME_PREFIX=$'"?(~|[$][{]?HOME[}]?|'"${HOME_RE}"$')"?/[.]claude'
 HP_GLOBAL="${HOME_PREFIX}/settings([.]local)?[.]json"
 HP="((${HP_START}${HP_PREFIX}${HP_TAIL})|(${HP_START}${HP_GLOBAL}))"

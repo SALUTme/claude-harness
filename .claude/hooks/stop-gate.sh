@@ -48,7 +48,22 @@ paths=$( { git diff --name-only -z "$base" -- 2>/dev/null
          } | tr '\0' '\n' | grep -v '^$' | sort -u )
 
 skip="${HARNESS_CHECK_SKIP_REGEX:-\.(md|mdx|txt|rst)$}"
-code=$(printf '%s\n' "$paths" | grep -v '^$' | grep -Ev -- "$skip" | grep -Ev '^(docs|wiki|raw|\.harness|\.claude)/' || true)
+if [ -n "$skip" ]; then
+  printf 'x\n' | grep -Eq -- "$skip" 2>/dev/null
+  [ "$?" -gt 1 ] && skip=''
+fi
+# Папки, изменения в которых не считаются работой, требующей проверки.
+# В режиме «исследование» вики и материалы как раз считаются: там их проверяет wiki-lint.
+exclude="${HARNESS_GATE_EXCLUDE_REGEX-__HARNESS_UNSET__}"
+[ "$exclude" = "__HARNESS_UNSET__" ] && exclude='^(docs|wiki|raw|\.harness|\.claude)/'
+# Негодное выражение не должно молча отключать ворота: тогда не исключаем ничего.
+if [ -n "$exclude" ]; then
+  printf 'x\n' | grep -Eq -- "$exclude" 2>/dev/null
+  [ "$?" -gt 1 ] && exclude=''
+fi
+code=$(printf '%s\n' "$paths" | grep -v '^$' || true)
+[ -n "$skip" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$skip" || true)
+[ -n "$exclude" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$exclude" || true)
 if [ -z "$code" ]; then
   reset_all
   exit 0

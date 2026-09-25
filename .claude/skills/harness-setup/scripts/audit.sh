@@ -17,6 +17,24 @@ for a in "$@"; do
 done
 cd "$PROJECT" 2>/dev/null || { echo "FAIL  папка проекта не найдена: $PROJECT"; exit 1; }
 
+kind=""
+if [ -f .harness/bootstrap-state.json ]; then
+  if command -v jq >/dev/null 2>&1; then
+    kind=$(jq -r '.kind // ""' .harness/bootstrap-state.json 2>/dev/null)
+  else
+    kind=$(grep -Eo '"kind"[[:space:]]*:[[:space:]]*"[a-z]+"' .harness/bootstrap-state.json | head -n 1 | sed -E 's/.*"([a-z]+)"$/\1/')
+  fi
+fi
+
+# harness.env не исполняется: его читает тот же разборщик, что и хуки.
+LIB=".claude/hooks/_harness_lib.sh"
+env_lib_missing=0
+[ -f .claude/harness.env ] && [ ! -f "$LIB" ] && env_lib_missing=1
+env_val() { # ключ
+  [ -f "$LIB" ] || return 0
+  ( . "$LIB" 2>/dev/null && harness_load_env .claude/harness.env 2>/dev/null && eval "printf '%s' \"\${$1:-}\"" )
+}
+
 pass=0; warn=0; fail=0
 P() { pass=$((pass + 1)); printf 'PASS  %-24s %s\n' "$1" "$2"; }
 W() { warn=$((warn + 1)); printf 'WARN  %-24s %s\n' "$1" "$2"; }
@@ -36,7 +54,12 @@ else
 fi
 
 section "1-2. Бриф, PRD, Северная звезда"
+if [ "$kind" = "research" ]; then
+  [ -s research/plan.md ] && P "план исследования" "research/plan.md есть" || F "план исследования" "нет research/plan.md"
+  grep -qs '{{' research/plan.md && W "план исследования" "остались заглушки шаблона"
+fi
 for f in docs/BRIEF.md docs/PRD.md docs/NORTH_STAR.md; do
+  [ "$kind" = "research" ] && [ "$f" = "docs/PRD.md" ] && continue
   [ -s "$f" ] && P "$(basename "$f")" "есть" || F "$(basename "$f")" "нет файла"
 done
 if [ -f docs/NORTH_STAR.md ] && grep -q '^Одно предложение\.$' docs/NORTH_STAR.md; then
@@ -79,12 +102,15 @@ else
 fi
 
 section "5. Ограждения"
+[ "$env_lib_missing" = "1" ] && F "чтение harness.env" "нет .claude/hooks/_harness_lib.sh, значения проверок прочитать нечем"
 if [ -f .claude/harness.env ]; then
   (
-    . .claude/harness.env
-    [ "${HARNESS_GATES_ACTIVE:-0}" = "1" ] && printf 'PASS  %-24s %s\n' "гейты" "включены" || printf 'WARN  %-24s %s\n' "гейты" "выключены, HARNESS_GATES_ACTIVE=0"
-    [ -n "${HARNESS_TEST_CMD:-}" ] && printf 'PASS  %-24s %s\n' "команда тестов" "$HARNESS_TEST_CMD" || printf 'FAIL  %-24s %s\n' "команда тестов" "HARNESS_TEST_CMD пустая"
-    [ -n "${HARNESS_FAST_CHECK_CMD:-}" ] && printf 'PASS  %-24s %s\n' "быстрая проверка" "$HARNESS_FAST_CHECK_CMD" || printf 'WARN  %-24s %s\n' "быстрая проверка" "HARNESS_FAST_CHECK_CMD пустая"
+    gates=$(env_val HARNESS_GATES_ACTIVE); testcmd=$(env_val HARNESS_TEST_CMD); fastcmd=$(env_val HARNESS_FAST_CHECK_CMD)
+    [ "${gates:-0}" = "1" ] && printf 'PASS  %-24s %s\n' "гейты" "включены" || printf 'WARN  %-24s %s\n' "гейты" "выключены, HARNESS_GATES_ACTIVE=0"
+    [ -n "$testcmd" ] && printf 'PASS  %-24s %s\n' "команда тестов" "$testcmd" || printf 'FAIL  %-24s %s\n' "команда тестов" "HARNESS_TEST_CMD пустая"
+    if [ -n "$fastcmd" ]; then printf 'PASS  %-24s %s\n' "быстрая проверка" "$fastcmd"
+    elif [ "$kind" = "research" ]; then printf 'PASS  %-24s %s\n' "быстрая проверка" "не нужна в исследовании"
+    else printf 'WARN  %-24s %s\n' "быстрая проверка" "HARNESS_FAST_CHECK_CMD пустая"; fi
   ) > /tmp/harness-audit-env.$$
   while IFS= read -r l; do
     case "$l" in PASS*) pass=$((pass + 1)) ;; WARN*) warn=$((warn + 1)) ;; FAIL*) fail=$((fail + 1)) ;; esac
@@ -105,7 +131,7 @@ if [ -f .claude/settings.json ] && jq -e . .claude/settings.json >/dev/null 2>&1
     jq -e --arg h "$h" '[.hooks[]?[]?.hooks[]?.command // empty] | any(test(".claude/hooks/" + $h + "[.]sh"))' .claude/settings.json >/dev/null \
       && P "подключён $h" "есть в settings.json" || F "подключён $h" "нет в settings.json"
   done
-  for r in 'Edit(/.claude/hooks/**)' 'Edit(/.claude/settings.json)' 'Edit(/.claude/harness.env)'; do
+  for r in 'Edit(/.claude/hooks/**)' 'Edit(/.claude/skills/**)' 'Edit(/.claude/settings.json)' 'Edit(/.claude/harness.env)'; do
     jq -e --arg r "$r" '.permissions.ask // [] | any(. == $r)' .claude/settings.json >/dev/null && P "подтверждение" "$r" || F "подтверждение" "нет правила $r"
   done
   jq -e '.permissions.deny // [] | any(. == "Read(/.env)")' .claude/settings.json >/dev/null && P "deny" "Read(/.env)" || F "deny" "нет правила Read(/.env)"
@@ -120,7 +146,9 @@ if [ -f "$SKILL_DIR/hooks/smoke-test.sh" ] && [ -d .claude/hooks ]; then
 fi
 
 section "6. Спецификация и приёмка"
-if [ -d .specify ] || [ -d specs ]; then P спецификация "Spec Kit"
+if [ "$kind" = "research" ]; then
+  [ -s research/tasks.md ] && P "вопросы исследования" "research/tasks.md есть" || F "вопросы исследования" "нет research/tasks.md"
+elif [ -d .specify ] || [ -d specs ]; then P спецификация "Spec Kit"
 elif [ -d openspec ]; then P спецификация "OpenSpec"
 else W спецификация "нет .specify, specs или openspec"; fi
 if [ -f docs/ACCEPTANCE.md ]; then
@@ -143,8 +171,42 @@ if [ -f .claude/settings.json ]; then
     && P "плагин OMC" "объявлен в settings.json, облако поставит его само" || W "плагин OMC" "не объявлен в settings.json, в облаке не будет deep-interview и агентов OMC"
 fi
 
+if [ "$kind" = "research" ]; then
+  section "Вики"
+  if [ -f "$SKILL_DIR/scripts/wiki-lint.sh" ]; then
+    lout=$(bash "$SKILL_DIR/scripts/wiki-lint.sh" . 2>&1); lrc=$?
+    lsum=$(printf '%s\n' "$lout" | grep -E '^Итог' | tail -n 1)
+    [ -z "$lsum" ] && lsum=$(printf '%s\n' "$lout" | grep -E '^ПРОБЛЕМА' | head -n 1)
+    [ -z "$lsum" ] && lsum="wiki-lint не отработал"
+    [ "$lrc" -eq 0 ] && P "проверка вики" "$lsum" || F "проверка вики" "$lsum"
+  fi
+  case "$(env_val HARNESS_TEST_CMD)" in
+    *wiki-lint.sh*) P "команда проверок" "ворота запускают wiki-lint" ;;
+    *)              F "команда проверок" "HARNESS_TEST_CMD не запускает wiki-lint, ворота проверяют не то" ;;
+  esac
+  gate_ok=1
+  for key in HARNESS_GATE_EXCLUDE_REGEX HARNESS_CHECK_SKIP_REGEX; do
+    val=$(env_val "$key")
+    if [ -z "$val" ]; then
+      if [ "$key" = "HARNESS_GATE_EXCLUDE_REGEX" ]; then
+        W "ворота и вики" "$key не задан: действует значение для кода, правки вики не проверяются"; gate_ok=0
+      fi
+      continue
+    fi
+    printf 'x\n' | grep -Eq -- "$val" 2>/dev/null
+    if [ "$?" -gt 1 ]; then
+      F "ворота и вики" "$key не разбирается как регулярное выражение"; gate_ok=0
+    elif printf 'wiki/page.md\nraw/material.pdf\n' | grep -Eq -- "$val" 2>/dev/null; then
+      F "ворота и вики" "$key исключает вики или материалы: правки не проверяются"; gate_ok=0
+    fi
+  done
+  [ "$gate_ok" = "1" ] && P "ворота и вики" "правки вики попадают под ворота"
+fi
+
 section "7b. Окружение"
-if [ -f .claude/hooks/project-setup.sh ]; then
+if [ "$kind" = "research" ] && [ ! -f .claude/hooks/project-setup.sh ]; then
+  P "подготовка окружения" "не нужна в исследовании"
+elif [ -f .claude/hooks/project-setup.sh ]; then
   P "подготовка окружения" ".claude/hooks/project-setup.sh есть"
   if [ -f .harness/runtime/env-setup.log ]; then P "лог подготовки" "есть, последний запуск в .harness/runtime/env-setup.log"; fi
 else
@@ -154,13 +216,13 @@ if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) 2>/d
   P CI "есть .github/workflows"
   grep -rqs --include='*.yml' --include='*.yaml' 'HARNESS_TEST_CMD' .github/workflows && P "CI и тесты" "CI запускает HARNESS_TEST_CMD" || W "CI и тесты" "CI не использует HARNESS_TEST_CMD, команды могут разойтись"
 else
-  W CI "нет .github/workflows, сломанный код не будет виден без агента"
+  [ "$kind" = "research" ] && W CI "нет .github/workflows, проверка вики не запускается без агента" || W CI "нет .github/workflows, сломанный код не будет виден без агента"
 fi
 if [ -f docs/HARNESS.md ] && grep -q '^## Окружение' docs/HARNESS.md; then P "окружение в HARNESS.md" "раздел есть"; else W "окружение в HARNESS.md" "нет раздела «Окружение» в docs/HARNESS.md"; fi
 
 if [ "$RUN_TESTS" = "1" ] && [ -f .claude/harness.env ]; then
   section "8. Тесты проекта"
-  cmd=$(. .claude/harness.env; printf '%s' "${HARNESS_TEST_CMD:-}")
+  cmd=$(env_val HARNESS_TEST_CMD)
   if [ -n "$cmd" ]; then
     bash -c "$cmd" >/dev/null 2>&1 && P "тесты" "зелёные" || F "тесты" "красные: $cmd"
   fi

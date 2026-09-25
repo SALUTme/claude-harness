@@ -20,7 +20,7 @@ description: Навигатор проекта по системе harness. Ис
 bash .claude/hooks/harness-status.sh --json
 ```
 
-Поля: `template_repo`, `bootstrap` (not_started, in_progress, done, unknown), `next_phase_name`, `questions_for_human`, `tasks_open`, `next_task`, `raw_unprocessed`, `gates_active`, `personal_skill_copies`, `codex_reviews_pending`, `cloud_session`.
+Поля: `template_repo`, `bootstrap` (not_started, in_progress, done, unknown), `next_phase_name`, `questions_for_human`, `tasks_open`, `next_task`, `raw_unprocessed`, `gates_active`, `personal_skill_copies`, `codex_reviews_pending`, `cloud_session`, `project_kind`, `wiki_dirty`.
 
 - Если `template_repo` равно true, это репозиторий-основа, а не проект. Подготовку проекта здесь не предлагай. Предлагай изменить основу, прогнать автотест хуков или проверить документацию.
 - Если `personal_skill_copies` не пустое, первым делом предложи удалить личные копии из `~/.claude/skills`: они перекрывают версии проекта.
@@ -35,6 +35,7 @@ bash .claude/hooks/harness-status.sh --json
 | Обвязка собирается | Продолжить с фазы, которая следующая | Скилл `harness-setup` в режиме продолжения |
 | Есть вопросы к человеку | Разобрать вопросы из docs/STATE.md | Задаёшь вопросы по одному, записываешь решения в docs/DECISIONS.md |
 | Есть необработанные материалы в raw/ | Обработать новые материалы | Операция ingest по `wiki/SCHEMA.md`, по одному источнику |
+| `project_kind` равен research и `wiki_dirty` true | Проверить вики | `bash .claude/skills/harness-setup/scripts/wiki-lint.sh`, разобрать проблемы |
 | Есть отложенные ревью Codex и `cloud_session` false | Прогнать отложенные ревью Codex | Ревью по `.claude/skills/harness-setup/references/verification.md` для каждой строки раздела «Ревью Codex на Mac» |
 | Есть незакрытые задачи | Сделать следующую задачу | Одна задача по циклу из раздела 3 |
 | Есть незакрытые задачи | Работать по очереди до первого вопроса | Цикл из раздела 3 по всем задачам |
@@ -49,7 +50,7 @@ bash .claude/hooks/harness-status.sh --json
 1. Прочитай задачу, её критерий в `docs/ACCEPTANCE.md` и относящиеся страницы вики.
 2. Составь короткий план и способ проверки.
 3. Реализуй.
-4. Прогони тесты. Хуки не дадут закоммитить или закончить ход с красными тестами.
+4. Прогони тесты. Хуки не дадут закоммитить или закончить ход с красными тестами. В исследовательском проекте роль тестов играет `wiki-lint`.
 5. Отдай на ревью по правилам из `docs/HARNESS.md`. Закрой серьёзные замечания. В облачной сессии ревью Codex откладывается: добавь строку в раздел «Ревью Codex на Mac» в `docs/STATE.md`.
 6. Закоммить и отправь ветку.
 7. Если в проекте есть CI, дождись результата для своего коммита: `gh run list --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId,status,conclusion`, затем `gh run watch ID --exit-status`. Нет запуска для коммита значит CI ещё не закончен. Красный CI значит, что задача не закрыта.

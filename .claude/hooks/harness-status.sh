@@ -68,6 +68,21 @@ print(len(d), len(p), r[0] if r else "-")' "$state" 2>/dev/null)
 fi
 next_name=""; [ -n "$next_key" ] && next_name=$(phase_name "$next_key")
 
+# --- Тип проекта: код или исследование
+kind=""
+if [ -f "$state" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    kind=$(jq -r '.kind // ""' "$state" 2>/dev/null)
+  else
+    kind=$(grep -Eo '"kind"[[:space:]]*:[[:space:]]*"[a-z]+"' "$state" | head -n 1 | sed -E 's/.*"([a-z]+)"$/\1/')
+  fi
+fi
+# Есть ли незакоммиченные правки в вики и материалах: навигатору это нужно, чтобы предложить проверку
+wiki_dirty=false
+if [ "$kind" = "research" ] && [ -n "$(git status --porcelain -- wiki raw 2>/dev/null | head -n 1)" ]; then
+  wiki_dirty=true
+fi
+
 # --- Вопросы к человеку
 questions=0
 [ -f docs/STATE.md ] && questions=$(awk '/^## Блокеры и вопросы к человеку/{f=1;next} /^## /{f=0} f && /^- +[^[:space:]]/{n++} END{print n+0}' docs/STATE.md)
@@ -79,8 +94,8 @@ if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then cloud=true; else cloud=false; fi
 
 # --- Задачи: один проход awk по всем tasks.md
 tasks_open=0; next_task=""
-if [ -d specs ] || [ -d openspec/changes ]; then
-  tasks_out=$(find specs openspec/changes -maxdepth 3 -name tasks.md -not -path '*/archive/*' -print0 2>/dev/null | xargs -0 awk '
+if [ -d specs ] || [ -d openspec/changes ] || [ -d research ]; then
+  tasks_out=$(find specs openspec/changes research -maxdepth 3 -name tasks.md -not -path '*/archive/*' -print0 2>/dev/null | xargs -0 awk '
     /^[[:space:]]*- \[ \]/ { n++; if (first == "") { first = $0; sub(/^[[:space:]]*- \[ \][[:space:]]*/, "", first) } }
     END { printf "%d\t%s", n + 0, first }' 2>/dev/null)
   tasks_open=$(printf '%s' "$tasks_out" | cut -f1); tasks_open=${tasks_open:-0}
@@ -109,9 +124,9 @@ done
 shadow=${shadow# }
 
 if [ "$MODE" = "--json" ]; then
-  printf '{"template_repo":%s,"bootstrap":"%s","phases_done":%s,"phases_total":%s,"next_phase":"%s","next_phase_name":"%s","questions_for_human":%s,"tasks_open":%s,"next_task":"%s","raw_unprocessed":%s,"gates_active":%s,"personal_skill_copies":"%s","codex_reviews_pending":%s,"cloud_session":%s}\n' \
+  printf '{"template_repo":%s,"bootstrap":"%s","phases_done":%s,"phases_total":%s,"next_phase":"%s","next_phase_name":"%s","questions_for_human":%s,"tasks_open":%s,"next_task":"%s","raw_unprocessed":%s,"gates_active":%s,"personal_skill_copies":"%s","codex_reviews_pending":%s,"cloud_session":%s,"project_kind":"%s","wiki_dirty":%s}\n' \
     "$template_repo" "$bootstrap" "$done_n" "$total_n" "$(json_str "$next_key")" "$(json_str "$next_name")" "$questions" "$tasks_open" \
-    "$(json_str "$next_task")" "$raw_new" "$([ "$gates" = "1" ] && echo true || echo false)" "$(json_str "$shadow")" "$codex_pending" "$cloud"
+    "$(json_str "$next_task")" "$raw_new" "$([ "$gates" = "1" ] && echo true || echo false)" "$(json_str "$shadow")" "$codex_pending" "$cloud" "$(json_str "$kind")" "$wiki_dirty"
   exit 0
 fi
 
@@ -121,6 +136,7 @@ if [ "$template_repo" = "true" ]; then
   exit 0
 fi
 
+[ "$kind" = "research" ] && printf '[harness] Это исследовательский проект: вместо тестов проверка вики, спецификации не используются.\n'
 case "$bootstrap" in
   not_started) line="Обвязка проекта ещё не собиралась." ;;
   in_progress) line="Обвязка собирается: пройдено $done_n из $total_n фаз, следующая фаза: $next_name." ;;
