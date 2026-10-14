@@ -43,7 +43,13 @@ F() { fail=$((fail + 1)); printf 'FAIL  %-24s %s\n' "$1" "$2"; }
 section() { printf '\n== %s\n' "$1"; }
 
 section "0. Основа"
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 && P git "репозиторий есть" || F git "не git-репозиторий"
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  P git "репозиторий есть"
+  git rev-parse --verify -q HEAD >/dev/null 2>&1 && P коммиты "история есть" || W коммиты "ни одного коммита: нет отката, ворота сравнивают всё с пустым деревом"
+  git remote get-url origin >/dev/null 2>&1 && P GitHub "origin: $(git remote get-url origin 2>/dev/null)" || W GitHub "нет origin: у проекта нет копии вне этой машины, CI и PR с обновлениями обвязки. См. references/github.md"
+else
+  F git "не git-репозиторий"
+fi
 command -v jq >/dev/null 2>&1 && P jq "установлен" || F jq "не установлен, хуки не будут работать"
 if [ -f .harness/bootstrap-state.json ] && jq -e . .harness/bootstrap-state.json >/dev/null 2>&1; then
   pending=$(jq -r '.phases | to_entries[] | select(.value.status != "done" and .value.status != "skipped") | .key' .harness/bootstrap-state.json | tr '\n' ' ')
