@@ -3,9 +3,10 @@
 # но задача в них пропускается: у проекта свои проверки в .github/workflows/ci.yml.
 name: Harness self-test
 
+# Ветки проверяются через PR, main после слияния. Push в ветку с открытым PR не запускает проверку дважды.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:

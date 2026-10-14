@@ -51,6 +51,7 @@ argument-hint: "[--resume] [--audit] [--greenfield|--brownfield] [--research] <�
 | `.claude/hooks/harness-status.sh` | Статус проекта для Claude в начале каждой сессии |
 | `.claude/hooks/project-setup.sh` | Подготовка окружения проекта: зависимости и службы, запускается в начале сессии и в CI |
 | `.github/workflows/ci.yml` | Автоматические проверки на GitHub |
+| `.github/workflows/harness-update.yml` | PR с обновлением обвязки, когда выходит новая версия основы |
 | `.harness/runtime/` | Логи хуков и счётчики, в git не попадает |
 
 ## Фаза 0. Предполётная проверка
@@ -177,9 +178,10 @@ argument-hint: "[--resume] [--audit] [--greenfield|--brownfield] [--research] <�
 2. Облачное окружение: если в облаке чего-то не хватает, пошаговая инструкция пользователю для настроек на claude.ai/code.
 3. CI: `.github/workflows/ci.yml` из шаблона с теми же подготовкой и командой тестов.
 4. Тестовый стенд: по решению пользователя.
-5. Запиши всё в раздел «Окружение» в `docs/HARNESS.md`.
+5. Обновления обвязки: `.github/workflows/harness-update.yml` уже в проекте из шаблона и открывает PR, когда выходит новая версия основы. Ему нужно разрешение открывать PR. Пользователь включает в настройках репозитория Settings → Actions → General галочку «Allow GitHub Actions to create and approve pull requests». На Mac можно сделать это командой с согласия пользователя: сначала прочитай текущие права `gh api repos/ВЛАДЕЛЕЦ/НАЗВАНИЕ/actions/permissions/workflow`, затем `gh api -X PUT repos/ВЛАДЕЛЕЦ/НАЗВАНИЕ/actions/permissions/workflow -f default_workflow_permissions=ТЕКУЩЕЕ_ЗНАЧЕНИЕ -F can_approve_pull_request_reviews=true`.
+6. Запиши всё в раздел «Окружение» в `docs/HARNESS.md`.
 
-**Ворота:** подготовка отработала без ошибки, CI был зелёным хотя бы раз, решение по стенду записано. Каждый отказ записан с причиной.
+**Ворота:** подготовка отработала без ошибки, CI был зелёным хотя бы раз, решение по стенду записано, разрешение для PR обновлений включено или отказ записан. Каждый отказ записан с причиной.
 
 ## Фаза 8. Пробный прогон
 

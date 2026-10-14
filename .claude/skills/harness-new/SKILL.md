@@ -44,6 +44,12 @@ gh api repos/ВЛАДЕЛЕЦ/НАЗВАНИЕ/contents/.harness/source.json --j
 ```
 GitHub копирует шаблон несколько секунд. Если файла ещё нет, скажи об этом и проверь снова следующим сообщением. Не пиши циклы ожидания.
 
+Workflow `harness-update.yml` в новом проекте открывает PR с обновлениями обвязки. Для этого репозиторию нужно разрешение «Allow GitHub Actions to create and approve pull requests». Спроси через `AskUserQuestion`, включить ли его. Если да, сохрани текущие права по умолчанию и включи только эту галочку:
+```bash
+p=$(gh api repos/ВЛАДЕЛЕЦ/НАЗВАНИЕ/actions/permissions/workflow --jq .default_workflow_permissions) && gh api -X PUT repos/ВЛАДЕЛЕЦ/НАЗВАНИЕ/actions/permissions/workflow -f default_workflow_permissions="$p" -F can_approve_pull_request_reviews=true
+```
+Если нет, скажи, что обновления обвязки тогда придётся запускать вручную, и где включить галочку потом: Settings → Actions → General.
+
 ## 5. Что дальше
 
 Дай ссылку `https://github.com/ВЛАДЕЛЕЦ/НАЗВАНИЕ` и спроси через `AskUserQuestion`, где работать:
