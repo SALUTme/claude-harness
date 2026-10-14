@@ -7,6 +7,11 @@ set -u
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:-$SELF_DIR}"
+# Копия в .claude/hooks проекта лежит без шаблонов и скриптов. Полный автотест берёт их из скилла harness-setup,
+# а проверяет по-прежнему хуки из этой папки.
+if [ ! -f "$SELF_DIR/../templates/bootstrap-state.json" ] && [ -f "$SELF_DIR/../skills/harness-setup/hooks/smoke-test.sh" ]; then
+  exec bash "$SELF_DIR/../skills/harness-setup/hooks/smoke-test.sh" "$SRC"
+fi
 command -v jq >/dev/null 2>&1 || { echo "FAIL  jq не найден"; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "FAIL  git не найден"; exit 1; }
 
@@ -114,6 +119,20 @@ echo "== block-dangerous: опасные команды, подтвержден�
 bd_each ask 'git reset --hard HEAD~1' 'git clean -fd' 'git checkout .' 'git push origin --delete main' 'git push origin :main' \
   'git branch -D old' 'sudo apt install x' 'psql -c "DROP TABLE users"' 'npm publish' "$HD_RESET"
 
+echo "== block-dangerous: секреты в команде"
+SK="sk-proj-$(printf 'A%.0s' $(seq 1 40))"
+SL="sk_live_$(printf 'a%.0s' $(seq 1 24))"
+HD_SECRET=$'cat > src/config.py <<EOF\nKEY = "AKIAABCDEFGHIJKLMNOP"\nEOF'
+JWT="eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+bd_each deny "echo \"OPENAI_API_KEY=$SK\" > src/env.ts" "echo $SL >> config/keys.txt" "printf '%s' $SK | tee src/k.ts" \
+  "sed -i 's/PLACEHOLDER/$SL/' src/pay.ts" "$HD_SECRET" "echo $JWT > src/t.ts" \
+  "git push --force https://x:ghp_$(printf 'a%.0s' $(seq 1 36))@github.com/o/r main"
+bd_each ask "curl -H \"Authorization: Bearer $SK\" https://api.example.com" "curl -s -H \"Authorization: Bearer $SL\" https://api.stripe.com 2>/dev/null" \
+  "export STRIPE_KEY=$SL" "curl -H \"Authorization: Bearer $SK\" https://api.openai.com/v1/models | jq \".data | length > 0\"" \
+  "git commit -m \"rotate key $SL -> env var\"" "curl -H \"Authorization: Bearer $JWT\" http://localhost:3000/me"
+bd_each empty "curl -u sk_test_$(printf 'a%.0s' $(seq 1 24)): https://api.stripe.com/v1/charges" 'echo "$STRIPE_KEY" > /dev/null' \
+  'printf "KEY=%s\n" "$OPENAI_API_KEY" > .env.example.tmp'
+
 echo "== block-dangerous: разрешено"
 bd_each empty 'ls -la' 'npm test' 'rm -rf ./build' 'rm -rf node_modules dist' 'rm -rf /Users/me/project/dist' 'rm -rf .github/old' \
   'git push origin feature' 'git push -u origin feature' 'git push origin main:main' 'git branch -d merged' \
@@ -152,6 +171,11 @@ run secret-guard "$(wj src/config.js 'const k = "AKIAABCDEFGHIJKLMNOP";')" deny 
 run secret-guard "$(jq -n '{tool_name:"Edit",tool_input:{file_path:"src/a.ts",old_string:"a",new_string:"-----BEGIN RSA PRIVATE KEY-----"}}')" deny "приватный ключ"
 run secret-guard "$(jq -n --arg t "ghp_$(printf 'a%.0s' $(seq 1 36))" '{tool_name:"MultiEdit",tool_input:{file_path:"a.py",edits:[{old_string:"a",new_string:$t}]}}')" deny "токен GitHub в MultiEdit"
 run secret-guard "$(wj src/ai.ts "const key = \"sk-proj-$(printf 'A%.0s' $(seq 1 40))\";")" deny "API-ключ sk-proj"
+run secret-guard "$(wj src/pay.ts "const k = \"sk_live_$(printf 'a%.0s' $(seq 1 24))\";")" deny "боевой ключ Stripe"
+run secret-guard "$(wj src/pay.ts "const k = \"rk_live_$(printf 'a%.0s' $(seq 1 24))\";")" deny "ограниченный боевой ключ Stripe"
+run secret-guard "$(wj src/hook.ts "const s = \"whsec_$(printf 'a%.0s' $(seq 1 32))\";")" deny "секрет вебхука Stripe"
+run secret-guard "$(wj src/pay.test.ts "const k = \"sk_test_$(printf 'a%.0s' $(seq 1 24))\";")" empty "тестовый ключ Stripe разрешён"
+run secret-guard "$(wj src/auth.test.ts 'const t = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";')" ask "JWT спрашивается"
 run secret-guard "$(wj "$HOME/.claude/settings.json" '{}')" deny "глобальные настройки Claude Code"
 run secret-guard "$(wj "$HOME/.claude/settings.local.json" '{}')" deny "глобальные локальные настройки"
 run secret-guard "$(wj .claude/hooks/x.sh 'echo')" ask "запись хука проекта"
@@ -291,6 +315,42 @@ printf 'HARNESS_GATES_ACTIVE=1\r\nHARNESS_TEST_CMD=exit 1\r\n' > "$TMP/.claude/h
 run commit-gate "$(bj 'git commit -m x')" deny "CRLF в harness.env не выключает гейты"
 printf '  HARNESS_GATES_ACTIVE=1 # включено\nHARNESS_TEST_CMD="exit 1" # красные\n' > "$TMP/.claude/harness.env"
 run commit-gate "$(bj 'git commit -m x')" deny "отступ и комментарий не выключают гейты"
+
+echo "== commit-gate: кэш"
+cg_runs() { # ожидаемое число прогонов, название
+  local n; n=$(wc -l < "$RUNS" | tr -d ' ')
+  if [ "$n" = "$1" ]; then ok commit-gate runs "$2"; else bad commit-gate "want=$1 runs got=$n" "$2"; fi
+}
+printf 'export const c = 1;\n' > src/cg.ts
+setenv 1 '' "echo run >> \"$RUNS\"; grep -q \"c = 1\" src/cg.ts" 8 0
+: > "$RUNS"
+run commit-gate "$(bj 'git commit -m x')" empty "зелёный коммит"
+run commit-gate "$(bj 'git commit -m y')" empty "тот же код второй раз"
+cg_runs 1 "зелёный прогон не повторяется"
+run stop-gate "$(sj false cg1)" empty "гейт конца хода берёт зелёный прогон коммита"
+cg_runs 1 "гейт конца хода не перезапускает тесты"
+printf 'export const c = 3;\n' > src/cg.ts
+run commit-gate "$(bj 'git commit -m z')" deny "правка кода сбрасывает кэш"
+cg_runs 2 "после правки тесты запускаются снова"
+mkdir -p docs; printf 'ok\n' > docs/golden.txt
+setenv 1 '' 'grep -qx ok docs/golden.txt' 8 0
+run commit-gate "$(bj 'git commit -m g')" empty "зелёный коммит с эталоном в исключённой папке"
+printf 'bad\n' > docs/golden.txt
+run commit-gate "$(bj 'git commit -m g')" deny "правка исключённого файла сбрасывает кэш коммита"
+rm -rf src/cg.ts docs "$TMP/.harness/runtime/last-green" "$TMP/.harness/runtime/last-green-all"
+
+echo "== commit-gate: проект в подпапке репозитория"
+M="$ST/mono"; mkdir -p "$M/app/.claude/hooks" "$M/app/src"
+cp "$SRC/_harness_lib.sh" "$SRC/commit-gate.sh" "$M/app/.claude/hooks/"
+git -C "$M" init -q
+printf 'v=1\n' > "$M/app/src/a.ts"
+git -C "$M" add app/src/a.ts; git -C "$M" -c user.email=smoke@local -c user.name=smoke commit -qm init
+printf 'HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD='"'"'grep -q "v=[12]" src/a.ts'"'"'\n' > "$M/app/.claude/harness.env"
+mono() { bj 'git commit -m x' | CLAUDE_PROJECT_DIR="$M/app" bash "$M/app/.claude/hooks/commit-gate.sh" 2>/dev/null; }
+printf 'v=2\n' > "$M/app/src/a.ts"
+[ -z "$(mono)" ] && ok commit-gate empty "подпапка: зелёный коммит" || bad commit-gate "want=empty" "подпапка: зелёный коммит"
+printf 'v=BROKEN\n' > "$M/app/src/a.ts"
+mono | grep -q '"permissionDecision": *"deny"' && ok commit-gate deny "подпапка: кэш видит содержимое файлов" || bad commit-gate "want=deny" "подпапка: кэш видит содержимое файлов"
 
 echo "== stop-gate: репозиторий без коммитов"
 printf 'good\n' > src/a.ts
@@ -573,6 +633,8 @@ if [ -f "$SELF_DIR/env-setup.sh" ]; then
       aout=$(bash "$AUD" "$C" 2>/dev/null)
       expect_out "аудит: ci.yml без .yaml распознан" 'PASS  CI ' "$aout"
       expect_out "аудит: CI использует команду тестов" 'CI запускает HARNESS_TEST_CMD' "$aout"
+      mv "$C/.github/workflows/ci.yml" "$C/.github/workflows/harness-selftest.yml"
+      expect_out "аудит: самопроверка основы не считается CI проекта" 'WARN  CI ' "$(bash "$AUD" "$C" 2>/dev/null)"
     fi
   else
     echo "SKIP  шаблоны CI и project-setup не найдены рядом со smoke-test.sh"
@@ -629,6 +691,32 @@ if [ -f "$SELF_DIR/harness-status.sh" ] && [ -f "$SELF_DIR/../templates/bootstra
   check "статус: основа распознаётся по origin" jq -e '.template_repo == true' <<<"$(CLAUDE_PROJECT_DIR="$ST/tpl" bash "$SELF_DIR/harness-status.sh" --json)"
 else
   echo "SKIP  harness-status.sh или шаблон состояния не найдены рядом со smoke-test.sh"
+fi
+
+echo "== аудит: версия основы"
+AUD="$SELF_DIR/../scripts/audit.sh"
+if [ -f "$AUD" ]; then
+  # gh подменяется заглушкой: она отдаёт source.json основы из файла рядом с собой, в сеть не ходит
+  V="$ST/ver"; mkdir -p "$V/bin" "$V/proj/.harness"
+  printf '#!/bin/sh\ncat "$(dirname "$0")/remote.json"\n' > "$V/bin/gh"; chmod +x "$V/bin/gh"
+  git -C "$V/proj" init -q; git -C "$V/proj" remote add origin https://github.com/me/my-project.git
+  aud_ver() { # версия проекта, версия основы или пусто, если основа недоступна
+    printf '{"repo":"me/claude-harness","ref":"main","version":"%s","template":false}\n' "$1" > "$V/proj/.harness/source.json"
+    if [ -n "$2" ]; then printf '{"version":"%s"}\n' "$2" > "$V/bin/remote.json"; else rm -f "$V/bin/remote.json"; fi
+    PATH="$V/bin:$PATH" bash "$AUD" "$V/proj" 2>/dev/null | grep 'версия основы'
+  }
+  expect_ver() { # название, шаблон, вывод
+    if printf '%s' "$3" | grep -q "$2"; then ok check yes "$1"; else bad check "want=$2" "$1: $3"; fi
+  }
+  expect_ver "аудит: отставание от основы" '^WARN.*основа уже 0.4.0' "$(aud_ver 0.3.0 0.4.0)"
+  expect_ver "аудит: актуальная версия" '^PASS.*актуальная' "$(aud_ver 0.4.0 0.4.0)"
+  expect_ver "аудит: версии сравниваются как числа" '^WARN.*основа уже 0.10.0' "$(aud_ver 0.9.0 0.10.0)"
+  expect_ver "аудит: проект новее основы" '^WARN.*новее основы' "$(aud_ver 0.10.0 0.9.0)"
+  expect_ver "аудит: основа недоступна" '^WARN.*не удалось прочитать' "$(aud_ver 0.3.0 '')"
+  git -C "$V/proj" remote set-url origin git@github.com:Me/Claude-Harness.git
+  expect_ver "аудит: в самой основе не ходит в сеть" '^PASS.*это сама основа' "$(aud_ver 0.3.0 '')"
+else
+  echo "SKIP  audit.sh не найден рядом со smoke-test.sh"
 fi
 
 echo

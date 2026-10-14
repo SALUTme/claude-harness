@@ -169,3 +169,84 @@ harness_load_env() {
     printf -v "$key" '%s' "$val"
   done < "$f"
 }
+
+# Ищет в тексте то, что похоже на секрет. Печатает вид секрета и возвращает 0, если нашёл.
+# Тестовые ключи Stripe вида sk_test_ секретом не считаются.
+harness_secret_kind() { # $1 = текст
+  local t="$1" B='(^|[^A-Za-z0-9_-])'
+  if   printf '%s' "$t" | grep -Eq -- "${B}AKIA[0-9A-Z]{16}";                   then echo "ключ AWS"
+  elif printf '%s' "$t" | grep -Eq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----';     then echo "приватный ключ"
+  elif printf '%s' "$t" | grep -Eq -- "${B}gh[pousr]_[A-Za-z0-9]{36}";          then echo "токен GitHub"
+  elif printf '%s' "$t" | grep -Eq -- "${B}github_pat_[A-Za-z0-9_]{40,}";       then echo "токен GitHub"
+  elif printf '%s' "$t" | grep -Eq -- "${B}sk-(proj-|ant-)?[A-Za-z0-9_-]{32,}"; then echo "API-ключ"
+  elif printf '%s' "$t" | grep -Eq -- "${B}xox[abprs]-[A-Za-z0-9-]{10,}";       then echo "токен Slack"
+  elif printf '%s' "$t" | grep -Eq -- "${B}AIza[0-9A-Za-z_-]{35}";              then echo "ключ Google API"
+  elif printf '%s' "$t" | grep -Eq -- "${B}(sk|rk)_live_[A-Za-z0-9]{20,}";      then echo "боевой ключ Stripe"
+  elif printf '%s' "$t" | grep -Eq -- "${B}whsec_[A-Za-z0-9]{32,}";             then echo "секрет вебхука Stripe"
+  else return 1
+  fi
+}
+
+# Возвращает 0, если в тексте есть похожее на JWT: три части base64url через точку, первые две начинаются с eyJ.
+harness_jwt_like() { # $1 = текст
+  printf '%s' "$1" | grep -Eq -- '(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+}
+
+# Изменённые пути относительно HEAD по одному на строку: правки, индекс и новые файлы.
+# Вывод -z устойчив к пробелам и кавычкам. В репозитории без коммитов сравнивает с пустым деревом,
+# чтобы видеть проиндексированные файлы. Вызывается из папки проекта. Если проект лежит в подпапке
+# репозитория, пути считаются от неё и изменения вне её не попадают: --relative у diff, ls-files так и работает.
+harness_changed_paths() {
+  local base
+  if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    base=HEAD
+  else
+    base=$(git hash-object -t tree /dev/null)
+  fi
+  { git diff --name-only --relative -z "$base" -- 2>/dev/null
+    git diff --name-only --relative -z --cached "$base" -- 2>/dev/null
+    git ls-files -o --exclude-standard -z 2>/dev/null
+  } | tr '\0' '\n' | grep -v '^$' | grep -v '^\.harness/runtime/' | sort -u
+}
+
+# Оставляет из списка путей те, что проверяются воротами: без HARNESS_CHECK_SKIP_REGEX и HARNESS_GATE_EXCLUDE_REGEX.
+# Негодное выражение не должно молча отключать ворота: тогда оно не исключает ничего.
+harness_code_paths() { # $1 = пути по одному на строку
+  local skip exclude code
+  skip="${HARNESS_CHECK_SKIP_REGEX:-\.(md|mdx|txt|rst)$}"
+  if [ -n "$skip" ]; then
+    printf 'x\n' | grep -Eq -- "$skip" 2>/dev/null
+    [ "$?" -gt 1 ] && skip=''
+  fi
+  # В режиме «исследование» вики и материалы как раз проверяются: там их проверяет wiki-lint.
+  exclude="${HARNESS_GATE_EXCLUDE_REGEX-__HARNESS_UNSET__}"
+  [ "$exclude" = "__HARNESS_UNSET__" ] && exclude='^(docs|wiki|raw|\.harness|\.claude)/'
+  if [ -n "$exclude" ]; then
+    printf 'x\n' | grep -Eq -- "$exclude" 2>/dev/null
+    [ "$?" -gt 1 ] && exclude=''
+  fi
+  code=$(printf '%s\n' "$1" | grep -v '^$' || true)
+  [ -n "$skip" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$skip" || true)
+  [ -n "$exclude" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$exclude" || true)
+  printf '%s' "$code"
+}
+
+# Отпечаток для кэша зелёного прогона: команда тестов, дерево HEAD, список и содержимое файлов. Хеши считаются одним процессом.
+# Гейт конца хода сравнивает отпечаток файлов кода с last-green. Гейт коммита строже: сравнивает отпечаток
+# всех изменённых файлов с last-green-all, потому что тесты могут читать и исключённые файлы, например эталоны в .txt.
+# Зелёный прогон любого из гейтов записывает оба отпечатка.
+harness_fingerprint() { # $1 = пути по одному на строку
+  local f existing="" deleted="" prefix
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if [ -f "$f" ]; then existing="$existing$f"$'\n'; else deleted="${deleted}deleted:$f"$'\n'; fi
+  done <<< "$1"
+  # hash-object --stdin-paths читает пути от корня репозитория, а не от папки проекта: добавляем путь подпапки.
+  prefix=$(git rev-parse --show-prefix 2>/dev/null)
+  { printf 'cmd:%s\n' "${HARNESS_TEST_CMD:-}"
+    printf 'head:%s\n' "$(git rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null || echo none)"
+    printf '%s' "$existing"
+    [ -n "$existing" ] && printf '%s' "$existing" | while IFS= read -r f; do printf '%s%s\n' "$prefix" "$f"; done | git hash-object --stdin-paths
+    printf '%s' "$deleted"
+  } | git hash-object --stdin
+}

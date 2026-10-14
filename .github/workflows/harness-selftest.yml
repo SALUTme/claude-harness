@@ -1,0 +1,69 @@
+# Самопроверка основы harness: автотест хуков и совпадение копий.
+# Работает только в репозитории основы. Проекты получают этот файл вместе с шаблоном,
+# но задача в них пропускается: у проекта свои проверки в .github/workflows/ci.yml.
+name: Harness self-test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    # Если основа переедет в другой репозиторий, поменяй имя здесь.
+    if: github.repository == 'SALUTme/claude-harness'
+    strategy:
+      fail-fast: false
+      matrix:
+        # На Mac хуки запускает системный bash 3.2: проверяем и его.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Синтаксис скриптов
+        run: |
+          bash --version | head -n 1
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "Ошибка синтаксиса: $f"; fail=1; }
+          done < <(git ls-files '*.sh')
+          exit "$fail"
+
+      - name: Копии хуков и шаблонов совпадают
+        run: |
+          S=.claude/skills/harness-setup
+          fail=0
+          for f in "$S"/hooks/*.sh .claude/hooks/*.sh; do
+            b=$(basename "$f")
+            cmp -s "$S/hooks/$b" ".claude/hooks/$b" || { echo "Расходятся: $S/hooks/$b и .claude/hooks/$b"; fail=1; }
+          done
+          while IFS='|' read -r a b; do
+            cmp -s "$a" "$b" || { echo "Расходятся: $a и $b"; fail=1; }
+          done <<'EOF'
+          .claude/settings.json|.claude/skills/harness-setup/hooks/settings.template.json
+          .claude/harness.env|.claude/skills/harness-setup/hooks/harness.env.template
+          .harness/bootstrap-state.json|.claude/skills/harness-setup/templates/bootstrap-state.json
+          EOF
+          exit "$fail"
+
+      - name: Версия описана в README
+        run: |
+          v=$(jq -r .version .harness/source.json)
+          grep -qF -- "- **$v.**" README.md || { echo "В README.md нет записи о версии $v из .harness/source.json"; exit 1; }
+
+      - name: Автотест хуков
+        run: |
+          # На раннере macOS первым в PATH стоит bash из Homebrew. Ставим /bin вперёд,
+          # чтобы и автотест, и хуки внутри него шли через системный bash 3.2, как на Mac пользователя.
+          if [ "$RUNNER_OS" = "macOS" ]; then export PATH="/bin:$PATH"; fi
+          bash --version | head -n 1
+          bash .claude/skills/harness-setup/hooks/smoke-test.sh

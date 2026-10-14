@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # harness-setup | аудит готовности проекта по воротам фаз.
 # Ничего не меняет в проекте. Тесты проекта запускает только с флагом --run-tests.
+# В сеть ходит один раз: читает через gh версию основы из её .harness/source.json.
 # Использование: audit.sh [папка_проекта] [--run-tests]
 # Код выхода: 0 без FAIL, 1 если есть хотя бы один FAIL.
 set -u
@@ -51,6 +52,40 @@ if [ -f .harness/bootstrap-state.json ] && jq -e . .harness/bootstrap-state.json
   [ -n "$skipped" ] && W пропуски "пропущены: $skipped"
 else
   F фазы "нет .harness/bootstrap-state.json, harness-setup не запускался"
+fi
+
+# Версии вида 0.3.1: истина, если $1 меньше $2. Пустая версия считается нулевой.
+ver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m ? n : m)
+    for (i = 1; i <= k; i++) { if (x[i] + 0 < y[i] + 0) exit 0; if (x[i] + 0 > y[i] + 0) exit 1 }
+    exit 1 }'
+}
+section "Версия основы"
+if [ ! -f .harness/source.json ] || ! jq -e . .harness/source.json >/dev/null 2>&1; then
+  W "версия основы" "нет .harness/source.json, обновления из основы не отслеживаются"
+else
+  src_repo=$(jq -r '.repo // ""' .harness/source.json)
+  src_ref=$(jq -r '.ref // "main"' .harness/source.json)
+  src_ver=$(jq -r '.version // ""' .harness/source.json)
+  origin=$(git remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#')
+  if [ -z "$src_repo" ]; then
+    W "версия основы" "в .harness/source.json не записан адрес основы"
+  elif [ "$(printf '%s' "$src_repo" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]')" ]; then
+    P "версия основы" "это сама основа, версия ${src_ver:-не указана}"
+  elif ! command -v gh >/dev/null 2>&1; then
+    W "версия основы" "проект на ${src_ver:-неизвестной версии}, свежую версию основы проверить нечем: нет gh"
+  else
+    remote_ver=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$src_repo/contents/.harness/source.json?ref=$src_ref" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)
+    if [ -z "$remote_ver" ]; then
+      W "версия основы" "не удалось прочитать версию основы $src_repo. В облаке основа должна быть подключена к сессии"
+    elif [ "$src_ver" = "$remote_ver" ]; then
+      P "версия основы" "$src_ver, актуальная"
+    elif ver_lt "$src_ver" "$remote_ver"; then
+      W "версия основы" "проект на ${src_ver:-неизвестной версии}, основа уже $remote_ver. Скажи «обнови обвязку из основы»"
+    else
+      W "версия основы" "проект на $src_ver, это новее основы $remote_ver. Проверь поле version в .harness/source.json"
+    fi
+  fi
 fi
 
 section "1-2. Бриф, PRD, Северная звезда"
@@ -212,7 +247,8 @@ elif [ -f .claude/hooks/project-setup.sh ]; then
 else
   W "подготовка окружения" "нет .claude/hooks/project-setup.sh, зависимости в новой сессии ставятся вручную"
 fi
-if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | grep -q .; then
+# harness-selftest.yml приходит из основы и в проекте не запускается, поэтому за CI проекта не считается.
+if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) ! -name 'harness-selftest.yml' 2>/dev/null | grep -q .; then
   P CI "есть .github/workflows"
   grep -rqs --include='*.yml' --include='*.yaml' 'HARNESS_TEST_CMD' .github/workflows && P "CI и тесты" "CI запускает HARNESS_TEST_CMD" || W "CI и тесты" "CI не использует HARNESS_TEST_CMD, команды могут разойтись"
 else

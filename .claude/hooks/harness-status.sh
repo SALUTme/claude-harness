@@ -116,9 +116,9 @@ fi
 gates=$([ -f .claude/harness.env ] && tr -d '\r' < .claude/harness.env | sed -E 's/^[[:space:]]+//' | grep -E '^HARNESS_GATES_ACTIVE=' | tail -n 1 | sed -E "s/^HARNESS_GATES_ACTIVE=[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//")
 gates=${gates:-0}
 
-# --- Личные копии скиллов перекрывают проектные
+# --- Личные копии скиллов перекрывают проектные. Личная копия harness-new нужна намеренно, её не считаем.
 shadow=""
-for s in harness harness-setup harness-init; do
+for s in harness harness-setup; do
   [ -d "$HOME/.claude/skills/$s" ] && shadow="$shadow $s"
 done
 shadow=${shadow# }
