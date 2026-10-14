@@ -1,0 +1,154 @@
+# Обновление обвязки harness из основы через PR.
+# Раз в день и по кнопке Run workflow смотрит версию основы из .harness/source.json.
+# Если основа новее, переносит её скриптом harness-sync.sh, прогоняет автотест хуков и открывает PR.
+# Изменения попадают в проект только после того, как человек сольёт PR.
+# В самой основе задача ничего не делает.
+#
+# Две задачи, чтобы код основы до ревью не получил права на запись:
+# - prepare выполняет код основы с правами только на чтение, без токена в git, и отдаёт патч;
+# - propose получает права на запись, но код основы не запускает: применяет патч и открывает PR.
+name: Harness update
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: harness-update
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.diff.outputs.go }}
+      cur: ${{ steps.check.outputs.cur }}
+      new: ${{ steps.check.outputs.new }}
+      branch: ${{ steps.check.outputs.branch }}
+      smoke_ok: ${{ steps.smoke.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Есть ли новая версия основы
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          src=.harness/source.json
+          if [ ! -f "$src" ]; then echo "Нет $src, обновлять не из чего"; exit 0; fi
+          repo=$(jq -r '.repo // empty' "$src"); ref=$(jq -r '.ref // "main"' "$src"); cur=$(jq -r '.version // "0"' "$src")
+          if [ -z "$repo" ] || [ "${repo,,}" = "${GITHUB_REPOSITORY,,}" ]; then echo "Это сама основа или адрес основы не записан"; exit 0; fi
+          safe='^[A-Za-z0-9._/-]+$'
+          if ! [[ "$repo" =~ $safe && "$ref" =~ $safe ]]; then echo "::warning::Странный адрес основы в $src, пропуск"; exit 0; fi
+          new=$(curl -fsSL "https://raw.githubusercontent.com/$repo/$ref/.harness/source.json" | jq -r '.version // empty') || new=""
+          if [ -z "$new" ]; then echo "::warning::Не удалось прочитать версию основы $repo@$ref. Основа должна быть публичной"; exit 0; fi
+          if ! [[ "$new" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then echo "::warning::Версия основы «$new» не похожа на номер версии, пропуск"; exit 0; fi
+          if ! awk -v a="$cur" -v b="$new" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); k = (n > m ? n : m)
+                 for (i = 1; i <= k; i++) { if (x[i] + 0 < y[i] + 0) exit 0; if (x[i] + 0 > y[i] + 0) exit 1 } exit 1 }'; then
+            echo "Проект на $cur, основа $new: обновлять нечего"; exit 0
+          fi
+          branch="harness/update-$new"
+          # Любой PR из этой ветки, открытый, закрытый или слитый, значит: эту версию уже предлагали. Закрытый PR это отказ от версии.
+          seen=$(gh pr list --head "$branch" --state all --json number,state --jq '.[0] | select(.) | "#\(.number) \(.state)"')
+          if [ -n "$seen" ]; then echo "Обновление до $new уже предлагалось: PR $seen"; exit 0; fi
+          { echo "go=1"; echo "repo=$repo"; echo "ref=$ref"; echo "cur=$cur"; echo "new=$new"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+
+      - name: Перенос обвязки
+        if: steps.check.outputs.go == '1'
+        env:
+          REPO: ${{ steps.check.outputs.repo }}
+          REF: ${{ steps.check.outputs.ref }}
+        run: |
+          git clone -q --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$RUNNER_TEMP/tpl"
+          mkdir -p "$RUNNER_TEMP/out"
+          bash "$RUNNER_TEMP/tpl/.claude/skills/harness-setup/scripts/harness-sync.sh" "$RUNNER_TEMP/tpl" . --skip-workflows > "$RUNNER_TEMP/out/report.md"
+          cat "$RUNNER_TEMP/out/report.md"
+
+      - name: Автотест хуков
+        id: smoke
+        if: steps.check.outputs.go == '1'
+        run: |
+          if bash .claude/hooks/smoke-test.sh > "$RUNNER_TEMP/out/smoke.log" 2>&1; then echo "ok=1" >> "$GITHUB_OUTPUT"; else echo "ok=0" >> "$GITHUB_OUTPUT"; fi
+          tail -n 30 "$RUNNER_TEMP/out/smoke.log"
+
+      - name: Патч
+        id: diff
+        if: steps.check.outputs.go == '1'
+        run: |
+          git add -A
+          if git diff --cached --quiet; then echo "После переноса изменений нет"; exit 0; fi
+          git diff --cached --binary > "$RUNNER_TEMP/out/harness.patch"
+          git diff --cached --stat
+          echo "go=1" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.diff.outputs.go == '1'
+        with:
+          name: harness-update
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+
+  propose:
+    needs: prepare
+    if: needs.prepare.outputs.go == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CUR: ${{ needs.prepare.outputs.cur }}
+      NEW: ${{ needs.prepare.outputs.new }}
+      BRANCH: ${{ needs.prepare.outputs.branch }}
+      SMOKE_OK: ${{ needs.prepare.outputs.smoke_ok }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: harness-update
+          path: ${{ runner.temp }}/in
+
+      - name: Открыть PR
+        run: |
+          IN="$RUNNER_TEMP/in"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "$BRANCH"
+          git apply --index "$IN/harness.patch"
+          git commit -q -m "Обвязка harness $CUR → $NEW"
+          git push -q --force -u origin "$BRANCH"
+          body="$RUNNER_TEMP/body.md"
+          {
+            cat "$IN/report.md"
+            echo "### Проверка"
+            if [ "$SMOKE_OK" = "1" ]; then
+              echo "- Автотест хуков: $(grep -E '^Итог' "$IN/smoke.log" | tail -n 1)"
+            else
+              echo "- ⚠️ Автотест хуков упал, PR открыт черновиком. Последние строки:"
+              echo '```'; grep -E '^FAIL' "$IN/smoke.log" | head -n 20 || true; tail -n 3 "$IN/smoke.log"; echo '```'
+            fi
+            echo "- PR открыт ботом, поэтому CI проекта на нём сам не запускается. Чтобы прогнать CI до слияния, закрой PR и открой снова."
+            echo "- Если эта версия не нужна, просто закрой PR: заново его не откроют, следующий придёт с новой версией основы."
+            echo
+            echo "Что нового в основе: раздел «Изменения основы» в README основы."
+          } > "$body"
+          draft=""; [ "$SMOKE_OK" = "1" ] || draft="--draft"
+          if ! url=$(gh pr create --base "$GITHUB_REF_NAME" --head "$BRANCH" --title "Обвязка harness $CUR → $NEW" --body-file "$body" $draft); then
+            echo "::error::Не удалось открыть PR. Включи в настройках репозитория Settings → Actions → General → Workflow permissions галочку «Allow GitHub Actions to create and approve pull requests». Ветка $BRANCH уже отправлена, PR можно открыть из неё вручную."
+            exit 1
+          fi
+          echo "Открыт $url"
+          # Старые PR с обновлением обвязки заменяются новым: они правят те же файлы
+          gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("harness/update-")) | select(.headRefName != env.BRANCH) | .number' |
+            while read -r n; do gh pr close "$n" --delete-branch --comment "Заменён обновлением до $NEW: $url" || true; done

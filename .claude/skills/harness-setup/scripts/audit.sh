@@ -86,6 +86,13 @@ else
       W "версия основы" "проект на $src_ver, это новее основы $remote_ver. Проверь поле version в .harness/source.json"
     fi
   fi
+  if [ -n "$src_repo" ] && [ "$(printf '%s' "$src_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]')" ]; then
+    [ -f .github/workflows/harness-update.yml ] \
+      && P "обновление обвязки" "harness-update.yml откроет PR, когда выйдет новая версия основы" \
+      || W "обновление обвязки" "нет .github/workflows/harness-update.yml, новые версии основы придётся переносить вручную"
+    wf_pending=$(jq -r '(.workflows_pending // []) | join(", ")' .harness/source.json 2>/dev/null)
+    [ -n "$wf_pending" ] && W "workflow обвязки" "устарели: $wf_pending. Перенеси их командой из README основы, раздел «Первое подключение»"
+  fi
 fi
 
 section "1-2. Бриф, PRD, Северная звезда"
@@ -247,8 +254,9 @@ elif [ -f .claude/hooks/project-setup.sh ]; then
 else
   W "подготовка окружения" "нет .claude/hooks/project-setup.sh, зависимости в новой сессии ставятся вручную"
 fi
-# harness-selftest.yml приходит из основы и в проекте не запускается, поэтому за CI проекта не считается.
-if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) ! -name 'harness-selftest.yml' 2>/dev/null | grep -q .; then
+# Workflow обвязки harness-selftest.yml и harness-update.yml приходят из основы и тесты проекта не запускают,
+# поэтому за CI проекта не считаются.
+if find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) ! -name 'harness-selftest.yml' ! -name 'harness-update.yml' 2>/dev/null | grep -q .; then
   P CI "есть .github/workflows"
   grep -rqs --include='*.yml' --include='*.yaml' 'HARNESS_TEST_CMD' .github/workflows && P "CI и тесты" "CI запускает HARNESS_TEST_CMD" || W "CI и тесты" "CI не использует HARNESS_TEST_CMD, команды могут разойтись"
 else

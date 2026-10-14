@@ -719,6 +719,74 @@ else
   echo "SKIP  audit.sh не найден рядом со smoke-test.sh"
 fi
 
+echo "== перенос обвязки из основы"
+SYNC="$SELF_DIR/../scripts/harness-sync.sh"
+ROOTDIR=$(cd "$SELF_DIR/../../../.." 2>/dev/null && pwd)
+if [ -f "$SYNC" ] && [ -f "$ROOTDIR/.claude/hooks/_harness_lib.sh" ] && [ -f "$ROOTDIR/.harness/source.json" ]; then
+  # Основа собирается из этой же копии, версия поднимается до 9.9.9
+  T="$ST/sync-tpl"; P="$ST/sync-proj"
+  mkdir -p "$T/.claude/skills" "$T/.harness" "$T/.github/workflows"
+  cp -R "$ROOTDIR/.claude/hooks" "$T/.claude/hooks"
+  for d in harness harness-setup harness-new; do [ -d "$ROOTDIR/.claude/skills/$d" ] && cp -R "$ROOTDIR/.claude/skills/$d" "$T/.claude/skills/$d"; done
+  jq '.version = "9.9.9"' "$ROOTDIR/.harness/source.json" > "$T/.harness/source.json"
+  printf 'name: Harness update\n' > "$T/.github/workflows/harness-update.yml"
+  printf 'echo tpl\n' > "$T/.claude/hooks/project-setup.sh"
+  # Проект старой версии со своими правками
+  mkdir -p "$P/.claude/hooks" "$P/.claude/skills/my-skill" "$P/.claude/skills/harness" "$P/.harness" "$P/docs"
+  printf 'old\n' > "$P/.claude/hooks/stop-gate.sh"
+  printf 'echo setup\n' > "$P/.claude/hooks/project-setup.sh"
+  printf 'mine\n' > "$P/.claude/skills/my-skill/SKILL.md"
+  printf 'stale\n' > "$P/.claude/skills/harness/OLD.md"
+  jq '.permissions.allow += ["Bash(npm test *)"]' "$T/.claude/skills/harness-setup/hooks/settings.template.json" > "$P/.claude/settings.json"
+  grep -v '^HARNESS_ENV_FIXTURE_REGEX=' "$T/.claude/skills/harness-setup/hooks/harness.env.template" \
+    | sed 's/^HARNESS_TEST_CMD=.*/HARNESS_TEST_CMD="npm test"/' > "$P/.claude/harness.env"
+  jq 'del(.phases["7b-environment"]) | .phases["0-preflight"].status = "done" | del(.kind)' \
+    "$T/.claude/skills/harness-setup/templates/bootstrap-state.json" > "$P/.harness/bootstrap-state.json"
+  printf '# Состояние\n\n## Сейчас\nработаю\n\n## Блокеры и вопросы к человеку\n- вопрос\n' > "$P/docs/STATE.md"
+  printf '{"repo":"me/claude-harness","ref":"main","version":"0.1.0","template":false}\n' > "$P/.harness/source.json"
+
+  rep=$(bash "$SYNC" "$T" "$P" --skip-workflows); rc=$?
+  check "перенос: успешный выход" test "$rc" -eq 0
+  check "перенос: хук заменён версией основы" cmp -s "$T/.claude/hooks/stop-gate.sh" "$P/.claude/hooks/stop-gate.sh"
+  check "перенос: новый хук добавлен" cmp -s "$T/.claude/hooks/secret-guard.sh" "$P/.claude/hooks/secret-guard.sh"
+  check "перенос: project-setup.sh проекта не тронут, даже если он есть в основе" grep -qx 'echo setup' "$P/.claude/hooks/project-setup.sh"
+  check "перенос: свой скилл проекта не тронут" grep -qx mine "$P/.claude/skills/my-skill/SKILL.md"
+  check "перенос: скилл обвязки совпадает с основой" diff -r "$T/.claude/skills/harness-setup" "$P/.claude/skills/harness-setup"
+  check "перенос: лишний файл скилла удалён" test ! -e "$P/.claude/skills/harness/OLD.md"
+  check "перенос: права проекта сохранены" jq -e '.permissions.allow | index("Bash(npm test *)")' "$P/.claude/settings.json"
+  check "перенос: хуки обвязки подключены" jq -e '[.hooks.PreToolUse[].hooks[].command] | any(test("block-dangerous"))' "$P/.claude/settings.json"
+  check "перенос: команда тестов проекта сохранена" grep -qx 'HARNESS_TEST_CMD="npm test"' "$P/.claude/harness.env"
+  check "перенос: недостающий ключ добавлен" grep -q '^HARNESS_ENV_FIXTURE_REGEX=' "$P/.claude/harness.env"
+  check "перенос: пройденная фаза осталась пройденной" jq -e '.phases["0-preflight"].status == "done"' "$P/.harness/bootstrap-state.json"
+  check "перенос: новая фаза добавлена" jq -e '.phases["7b-environment"].status == "pending" and has("kind")' "$P/.harness/bootstrap-state.json"
+  check "перенос: разделы STATE.md добавлены, старые на месте" sh -c "grep -q '^## Ревью Codex на Mac' '$P/docs/STATE.md' && grep -qx работаю '$P/docs/STATE.md' && [ \$(grep -c '^## Блокеры' '$P/docs/STATE.md') = 1 ]"
+  check "перенос: версия записана" jq -e '.version == "9.9.9" and .template == false and .repo == "me/claude-harness"' "$P/.harness/source.json"
+  check "перенос: workflow не тронут при --skip-workflows" test ! -e "$P/.github/workflows/harness-update.yml"
+  printf '%s' "$rep" | grep -q 'harness-update.yml.*вручную' && ok check yes "перенос: отчёт просит обновить workflow вручную" || bad check "want=workflow в отчёте" "перенос: отчёт просит обновить workflow вручную"
+  printf '%s' "$rep" | grep -q '0.1.0 → 9.9.9' && ok check yes "перенос: отчёт с версиями" || bad check "want=версии" "перенос: отчёт с версиями"
+  check "перенос: непереносённый workflow запомнен" jq -e '.workflows_pending == [".github/workflows/harness-update.yml"]' "$P/.harness/source.json"
+  sum1=$(cd "$P" && find . -type f -exec cksum {} + | sort)
+  rep2=$(bash "$SYNC" "$T" "$P" --skip-workflows)
+  sum2=$(cd "$P" && find . -type f -exec cksum {} + | sort)
+  [ "$sum1" = "$sum2" ] && ok check yes "перенос: повторный запуск ничего не меняет" || bad check "want=без изменений" "перенос: повторный запуск ничего не меняет"
+  printf '%s' "$rep2" | grep -q 'Изменений нет' && ok check yes "перенос: повторный отчёт без изменений" || bad check "want=Изменений нет" "перенос: повторный отчёт без изменений"
+  bash "$SYNC" "$T" "$P" >/dev/null
+  check "перенос: без флага workflow обвязки копируется" cmp -s "$T/.github/workflows/harness-update.yml" "$P/.github/workflows/harness-update.yml"
+  check "перенос: после переноса workflow напоминание снято" jq -e 'has("workflows_pending") | not' "$P/.harness/source.json"
+  # Файлы проекта с переводами строк Windows и без перевода строки в конце
+  P2="$ST/sync-proj2"; mkdir -p "$P2/.claude" "$P2/docs" "$P2/.harness"
+  printf '# Состояние\r\n\r\n## Сейчас\r\nработаю\r\n\r\n## Сделано \r\n- x\r\n' > "$P2/docs/STATE.md"
+  printf 'HARNESS_GATES_ACTIVE=1\nHARNESS_TEST_CMD="make test"' > "$P2/.claude/harness.env"
+  bash "$SYNC" "$T" "$P2" --skip-workflows >/dev/null
+  check "перенос: CRLF и пробелы в заголовках STATE.md не дают дублей" sh -c "[ \$(grep -c '^## Сейчас' '$P2/docs/STATE.md') = 1 ] && [ \$(grep -c '^## Сделано' '$P2/docs/STATE.md') = 1 ] && grep -q '^## Ревью Codex на Mac' '$P2/docs/STATE.md'"
+  check "перенос: последняя строка harness.env без перевода строки цела" grep -qx 'HARNESS_TEST_CMD="make test"' "$P2/.claude/harness.env"
+  check "перенос: ключи добавлены в harness.env без конца строки" grep -q '^HARNESS_MAX_EDITS_PER_FILE=' "$P2/.claude/harness.env"
+  if bash "$SYNC" "$T" "$T" >/dev/null 2>&1; then bad check "want=отказ" "перенос: основа в саму себя не переносится"; else ok check yes "перенос: основа в саму себя не переносится"; fi
+  if bash "$SYNC" "$ST/nowhere" "$P" >/dev/null 2>&1; then bad check "want=отказ" "перенос: без основы отказ"; else ok check yes "перенос: без основы отказ"; fi
+else
+  echo "SKIP  harness-sync.sh или основа не найдены рядом со smoke-test.sh"
+fi
+
 echo
 echo "Итог: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
