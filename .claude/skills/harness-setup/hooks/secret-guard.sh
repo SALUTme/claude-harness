@@ -297,14 +297,8 @@ esac
 content=$(jq -r '[.tool_input.content, .tool_input.new_string, .tool_input.new_source, ((.tool_input.edits // [])[] | .new_string)] | map(select(type == "string")) | join("\n")' <<<"$input")
 [ -z "$content" ] && exit 0
 
-has() { printf '%s' "$content" | grep -Eq -- "$1"; }
-B='(^|[^A-Za-z0-9_-])'
-has "${B}AKIA[0-9A-Z]{16}"                    && deny "Похоже на ключ AWS в $rel. Вынеси его в переменную окружения."
-has '-----BEGIN [A-Z ]*PRIVATE KEY-----'      && deny "Похоже на приватный ключ в $rel. Храни его вне репозитория."
-has "${B}gh[pousr]_[A-Za-z0-9]{36}"           && deny "Похоже на токен GitHub в $rel. Вынеси его в переменную окружения."
-has "${B}github_pat_[A-Za-z0-9_]{40,}"        && deny "Похоже на токен GitHub в $rel. Вынеси его в переменную окружения."
-has "${B}sk-(proj-|ant-)?[A-Za-z0-9_-]{32,}"  && deny "Похоже на API-ключ в $rel. Вынеси его в переменную окружения."
-has "${B}xox[abprs]-[A-Za-z0-9-]{10,}"        && deny "Похоже на токен Slack в $rel. Вынеси его в переменную окружения."
-has "${B}AIza[0-9A-Za-z_-]{35}"               && deny "Похоже на ключ Google API в $rel. Вынеси его в переменную окружения."
+# Шаблоны секретов общие с block-dangerous.sh: там они ловят запись секрета в файл через терминал.
+kind=$(harness_secret_kind "$content") && deny "Похоже на $kind в $rel. Секрет хранится вне репозитория: в коде читай его из переменной окружения."
+harness_jwt_like "$content" && ask "Похоже на JWT в $rel. Настоящий токен хранится в переменной окружения. Подтверждай, только если это тестовый пример."
 
 exit 0

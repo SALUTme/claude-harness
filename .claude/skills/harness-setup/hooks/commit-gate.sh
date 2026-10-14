@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # harness-setup | PreToolUse, matcher Bash, if Bash(git *)
 # Запрещает коммит при красных тестах. Коммит определяется по настоящей подкоманде git.
+# Зелёный прогон кэшируется по тому же отпечатку, что и в гейте конца хода.
 set -u
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,6 +32,23 @@ while IFS= read -r raw; do
 done <<< "$(harness_segments "$cmd")"
 [ "$is_commit" = "1" ] || exit 0
 
+# Если те же изменения уже были зелёными в гейте конца хода или в прошлом коммите, тесты не перезапускаются.
+# Сравниваются все изменённые файлы, а не только код: тесты могут читать и исключённые файлы.
+# Без изменений кода кэш не используется: тогда коммитятся только исключённые файлы, и тесты прогоняются как раньше.
+fp=""; fp_all=""
+if (cd "$ROOT" && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
+  all=$(cd "$ROOT" && harness_changed_paths)
+  code=$(harness_code_paths "$all")
+  if [ -n "$code" ]; then
+    fp=$(cd "$ROOT" && harness_fingerprint "$code")
+    fp_all=$(cd "$ROOT" && harness_fingerprint "$all")
+  fi
+fi
+if [ -n "$fp_all" ] && [ "$fp_all" = "$(cat "$RUNTIME/last-green-all" 2>/dev/null)" ]; then
+  log pass "cached green"
+  exit 0
+fi
+
 out=$(cd "$ROOT" && bash -c "$HARNESS_TEST_CMD" 2>&1); rc=$?
 if [ "$rc" -ne 0 ]; then
   tail_out=$(printf '%s\n' "$out" | tail -n 40)
@@ -38,6 +56,10 @@ if [ "$rc" -ne 0 ]; then
   log deny "rc=$rc"
   jq -n --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
   exit 0
+fi
+if [ -n "$fp" ]; then
+  printf '%s' "$fp" > "$RUNTIME/last-green"
+  printf '%s' "$fp_all" > "$RUNTIME/last-green-all"
 fi
 log pass "tests green"
 exit 0

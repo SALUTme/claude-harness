@@ -35,50 +35,16 @@ reset_all()  { rm -f "$counter" "$last_red" "$gave_up" 2>/dev/null; }
 # Новый ход начинает счёт блокировок заново
 [ "$active" = "true" ] || reset_turn
 
-# Изменённые пути. Вывод -z устойчив к пробелам и кавычкам.
-# В репозитории без коммитов сравниваем с пустым деревом, чтобы видеть проиндексированные файлы.
-if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
-  base=HEAD
-else
-  base=$(git hash-object -t tree /dev/null)
-fi
-paths=$( { git diff --name-only -z "$base" -- 2>/dev/null
-           git diff --name-only -z --cached "$base" -- 2>/dev/null
-           git ls-files -o --exclude-standard -z 2>/dev/null
-         } | tr '\0' '\n' | grep -v '^$' | sort -u )
-
-skip="${HARNESS_CHECK_SKIP_REGEX:-\.(md|mdx|txt|rst)$}"
-if [ -n "$skip" ]; then
-  printf 'x\n' | grep -Eq -- "$skip" 2>/dev/null
-  [ "$?" -gt 1 ] && skip=''
-fi
-# Папки, изменения в которых не считаются работой, требующей проверки.
-# В режиме «исследование» вики и материалы как раз считаются: там их проверяет wiki-lint.
-exclude="${HARNESS_GATE_EXCLUDE_REGEX-__HARNESS_UNSET__}"
-[ "$exclude" = "__HARNESS_UNSET__" ] && exclude='^(docs|wiki|raw|\.harness|\.claude)/'
-# Негодное выражение не должно молча отключать ворота: тогда не исключаем ничего.
-if [ -n "$exclude" ]; then
-  printf 'x\n' | grep -Eq -- "$exclude" 2>/dev/null
-  [ "$?" -gt 1 ] && exclude=''
-fi
-code=$(printf '%s\n' "$paths" | grep -v '^$' || true)
-[ -n "$skip" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$skip" || true)
-[ -n "$exclude" ] && code=$(printf '%s\n' "$code" | grep -v '^$' | grep -Ev -- "$exclude" || true)
+# Изменённые пути и те из них, что проверяются воротами. Правила отбора общие с гейтом коммита.
+paths=$(harness_changed_paths)
+code=$(harness_code_paths "$paths")
 if [ -z "$code" ]; then
   reset_all
   exit 0
 fi
 
-# Отпечаток: команда тестов, список и содержимое изменённых файлов кода. Хеши считаются одним процессом.
-existing=""; deleted=""
-while IFS= read -r f; do
-  if [ -f "$f" ]; then existing="$existing$f"$'\n'; else deleted="${deleted}deleted:$f"$'\n'; fi
-done <<< "$code"
-fp=$( { printf 'cmd:%s\n' "$HARNESS_TEST_CMD"
-        printf '%s' "$existing"
-        [ -n "$existing" ] && printf '%s' "$existing" | git hash-object --stdin-paths
-        printf '%s' "$deleted"
-      } | git hash-object --stdin )
+# Отпечаток общий с гейтом коммита: зелёный прогон там не повторяется здесь, и наоборот.
+fp=$(harness_fingerprint "$code")
 
 if [ "$fp" = "$(cat "$RUNTIME/last-green" 2>/dev/null)" ]; then
   reset_all
@@ -118,6 +84,7 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 printf '%s' "$fp" > "$RUNTIME/last-green"
+harness_fingerprint "$paths" > "$RUNTIME/last-green-all"
 reset_all
 log pass "tests green"
 
